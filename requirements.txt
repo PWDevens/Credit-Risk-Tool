@@ -1,4 +1,7 @@
 python-dotenv
 kagglehub
+numpy
 pandas
 scikit-learn
+auto-sklearn
+matplotlib
