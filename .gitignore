@@ -2,3 +2,4 @@ secrets/
 __pycache__/
 data/raw/
 .venv/
+data/processed/
