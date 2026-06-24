@@ -9,3 +9,4 @@ modeling/**/automl_model/
 modeling/model-results/
 AutogluonModels/
 *.joblib
+*.log
