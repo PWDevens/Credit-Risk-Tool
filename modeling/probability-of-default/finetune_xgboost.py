@@ -143,7 +143,6 @@ def tune_hyperparameters(X, y, spw):
         num_samples=-1,
         points_to_evaluate=[seed],
         low_cost_partial_config={"n_estimators": 50},
-        seed=42,
         verbose=1,
     )
     best = _coerce_ints(analysis.best_config)
