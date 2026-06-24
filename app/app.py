@@ -1,8 +1,12 @@
 """Credit Risk Scorecard — Win98 underwriting terminal (Streamlit).
 
 A lender enters origination-time borrower/loan facts and sees PD, LGD, EAD, and the
-resulting Expected Loss (EL = PD x LGD x EAD), with a model toggle (AutoML vs
-fine-tuned, once trained). No price fields are collected — they are excluded inputs.
+resulting Expected Loss (EL = PD x LGD x EAD). It toggles between the AutoML and
+fine-tuned (LightGBM) PD models, explains the PD per-borrower with SHAP, and adds
+risk-based pricing (lifetime ECL, expected profit/RAROC, recommended APR).
+
+Price (the offered APR) is collected only as a financial input/output — it is never
+fed to the risk models, which see origination-time facts only.
 
 Run:  streamlit run app/app.py
 """
@@ -19,6 +23,7 @@ sys.path.insert(0, str(REPO_ROOT / "modeling"))
 sys.path.insert(0, str(REPO_ROOT / "data"))
 
 from common.predictor import RiskPredictor, available_families, FAMILY_LABELS  # noqa: E402
+from common.finance import EconomicAssumptions, project as fin_project, price as fin_price  # noqa: E402
 
 # DATA_DICTIONARY §10 — ListingCategory codes (stored as strings in the model).
 PURPOSE = {
@@ -218,6 +223,35 @@ def render_explanation(drivers: list) -> None:
     )
 
 
+def render_financials(offered_apr: float, econ: dict, pr: dict) -> None:
+    """Render lifetime ECL + expected profit/RAROC + risk-based price (Win98 panel)."""
+    be, tgt, hurdle = pr["breakeven_apr"], pr["target_raroc_apr"], pr["target_raroc"]
+    if offered_apr >= tgt:
+        cls, verdict = "approve", f"✓ PROFITABLE — clears the {hurdle:.0%} RAROC hurdle"
+    elif offered_apr >= be:
+        cls, verdict = "refer", "⚠ COVERS COST — above break-even but below target return; reprice up"
+    else:
+        cls, verdict = "decline", "✕ UNPROFITABLE — priced below break-even"
+    st.markdown(
+        f"""
+        <div class="w98-window">
+          <div class="w98-titlebar"><span>💵 Financials — lifetime &amp; discounted</span><span class="controls">_ ▢ ✕</span></div>
+          <div class="body">
+            <div class="metric"><span>Monthly payment @ {offered_apr:.1%} APR</span><b>${econ['monthly_payment']:,.0f}</b></div>
+            <div class="metric"><span>Lifetime ECL&nbsp;&nbsp;(PD term-structure × EAD amort. × disc.)</span><b>${econ['lifetime_ecl']:,.0f}</b></div>
+            <div class="metric"><span>Interest income (PV, survival-weighted)</span><b>${econ['interest_income_pv']:,.0f}</b></div>
+            <div class="metric"><span>Expected profit / NPV</span><b>${econ['expected_profit']:,.0f}</b></div>
+            <div class="metric el"><span>RAROC (annualized)</span><b>{econ['raroc']:.1%}</b></div>
+            <div class="metric"><span>Break-even APR</span><b>{be:.2%}</b></div>
+            <div class="metric"><span>Recommended APR&nbsp;&nbsp;(@ {hurdle:.0%} RAROC)</span><b>{tgt:.2%}</b></div>
+            <div class="verdict {cls}">{verdict}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # --------------------------------------------------------------------------- #
 def main() -> None:
     st.set_page_config(page_title="Underwriting Terminal", page_icon="💾", layout="wide")
@@ -279,6 +313,16 @@ def main() -> None:
             prior_loans = c1.number_input("Prior Prosper loans", 0, 30, 0)
             ontime = c2.number_input("On-time prior payments", 0, 500, 0)
 
+            st.markdown('<div class="w98-group">Pricing &amp; economics</div>', unsafe_allow_html=True)
+            offered_apr = st.slider("Offered APR", 0.05, 0.36, 0.15, step=0.005,
+                                    help="Not a model input — the price you would quote. Drives profit/RAROC.")
+            with st.expander("Cost & capital assumptions"):
+                a1, a2, a3, a4 = st.columns(4)
+                funding = a1.number_input("Funding rate", 0.0, 0.20, 0.04, step=0.005, format="%.3f")
+                servicing = a2.number_input("Servicing rate", 0.0, 0.10, 0.01, step=0.005, format="%.3f")
+                capital_ratio = a3.number_input("Capital ratio", 0.0, 0.30, 0.08, step=0.01, format="%.2f")
+                target_raroc = a4.number_input("Target RAROC", 0.0, 0.50, 0.15, step=0.01, format="%.2f")
+
             submitted = st.form_submit_button("▶  Run Risk Assessment")
 
     with right:
@@ -303,6 +347,13 @@ def main() -> None:
             render_result(family, float(loan_amt), result)
             if family == "finetuned":
                 render_explanation(rp.explain_pd(inputs))
+
+            assum = EconomicAssumptions(funding_rate=funding, servicing_rate=servicing,
+                                        capital_ratio=capital_ratio, target_raroc=target_raroc)
+            econ = fin_project(float(loan_amt), float(offered_apr), int(term),
+                               result["pd"], result["lgd"], assum)
+            pr = fin_price(float(loan_amt), int(term), result["pd"], result["lgd"], assum)
+            render_financials(float(offered_apr), econ, pr)
         else:
             st.markdown(
                 '<div class="w98-window"><div class="w98-titlebar"><span>📊 Risk Assessment</span>'
@@ -314,7 +365,7 @@ def main() -> None:
 
     st.markdown(
         f'<div class="w98-statusbar"><span>Ready</span>'
-        f'<span class="fixed">Model: {family}</span>'
+        f'<span class="fixed">PD model: {FAMILY_LABELS.get(family, family)}</span>'
         f'<span class="fixed">EL = PD × LGD × EAD</span></div>',
         unsafe_allow_html=True,
     )
