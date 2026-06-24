@@ -39,7 +39,7 @@ POST_2009_CUTOFF = pd.Timestamp("2009-07-01")  # ProsperScore/Rating feature bre
 # --------------------------------------------------------------------------- #
 # Raw feature columns by bucket (DATA_DICTIONARY §2-4)                          #
 # --------------------------------------------------------------------------- #
-CREDIT_BUREAU = [
+CREDIT_BUREAU = [f"CREDIT_BUREAU_{col}" for col in [
     "CreditScoreRangeLower", "CreditScoreRangeUpper",
     "CurrentCreditLines", "OpenCreditLines", "TotalCreditLinespast7years",
     "TotalTrades", "TradesNeverDelinquent (percentage)", "TradesOpenedLast6Months",
@@ -48,27 +48,27 @@ CREDIT_BUREAU = [
     "CurrentDelinquencies", "AmountDelinquent", "DelinquenciesLast7Years",
     "PublicRecordsLast10Years", "PublicRecordsLast12Months",
     "InquiriesLast6Months", "TotalInquiries", "DebtToIncomeRatio",
-]
-APPLICATION_NUMERIC = [
+]]
+APPLICATION_NUMERIC = [f"APPLICATION_NUMERIC_{col}" for col in [
     "Term", "LoanOriginalAmount", "StatedMonthlyIncome", "EmploymentStatusDuration",
-]
-APPLICATION_CATEGORICAL = [
+]]
+APPLICATION_CATEGORICAL = [f"APPLICATION_CATEGORICAL_{col}" for col in [
     "IncomeRange", "IncomeVerifiable", "EmploymentStatus", "Occupation",
     "BorrowerState", "ListingCategory (numeric)", "IsBorrowerHomeowner", "CurrentlyInGroup",
-]
+]]
 # Prior-Prosper history (Bucket 3): informative nulls -> fill 0 + is_repeat_borrower.
-PRIOR_PROSPER = [
+PRIOR_PROSPER = [f"PRIOR_PROSPER_{col}" for col in [
     "TotalProsperLoans", "TotalProsperPaymentsBilled", "OnTimeProsperPayments",
     "ProsperPaymentsLessThanOneMonthLate", "ProsperPaymentsOneMonthPlusLate",
     "ProsperPrincipalBorrowed", "ProsperPrincipalOutstanding", "ScorexChangeAtTimeOfListing",
-]
+]]
 
 # Derived features (DATA_DICTIONARY §9).
-DERIVED_NUMERIC = [
+DERIVED_NUMERIC = [f"DERIVED_NUMERIC_{col}" for col in [
     "credit_history_months", "credit_score_mid", "loan_to_income",
     "stated_income_log", "is_repeat_borrower", "income_unverified", "dti_capped_flag",
-]
-DERIVED_CATEGORICAL = ["bankcard_util_bucket"]
+]]
+DERIVED_CATEGORICAL = [f"DERIVED_CATEGORICAL_{col}" for col in ["bankcard_util_bucket"]]
 
 # The model input contract. Every downstream consumer reads this.
 MODEL_FEATURES = (
@@ -78,15 +78,15 @@ MODEL_FEATURES = (
 CATEGORICAL_FEATURES = APPLICATION_CATEGORICAL + DERIVED_CATEGORICAL
 
 # Kept in the processed frame for label building / benchmarking — NOT features.
-LABEL_SUPPORT = [
+LABEL_SUPPORT = [f"SUPPORT_{col}" for col in [
     "LoanStatus", "LoanOriginalAmount",
     "LP_CustomerPrincipalPayments", "LP_NetPrincipalLoss",
     "LP_GrossPrincipalLoss", "LP_NonPrincipalRecoverypayments",
-]
-BENCHMARK_COLS = ["ProsperScore", "ProsperRating (numeric)"]
+]]
+BENCHMARK_COLS = [f"BENCHMARK_{col}" for col in ["ProsperScore", "ProsperRating (numeric)"]]
 
 # Raw columns needed only to compute derived features (not retained as features).
-_DERIVE_SOURCES = ["DateCreditPulled", "FirstRecordedCreditLine"]
+_DERIVE_SOURCES = [f"DERIVE_SOURCE_{col}" for col in ["DateCreditPulled", "FirstRecordedCreditLine"]]
 
 PD_TARGET = "is_bad"
 
@@ -128,6 +128,100 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     for col in PRIOR_PROSPER:
         if col in df.columns:
             df[col] = df[col].fillna(0)
+
+    return df
+
+# --------------------------------------------------------------------------- #
+# Feature Engineering to Improve Modeling                                           #
+# --------------------------------------------------------------------------- #
+def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
+    """Engineers advanced financial risk metrics while safely handling data leakage
+
+    and first-time borrower edge cases.
+    """
+    df = df.copy()
+
+    # =========================================================================
+    # 1. CREDIT CAPACITY, LEVERAGE & AFFORDABILITY METRICS
+    # =========================================================================
+
+    # Loan-to-Income (LTI) Ratio (Annualized Income)
+    # Using .div() to prevent zero income division crashing the pipeline
+    annual_income = df["StatedMonthlyIncome"] * 12
+    df["Credit_and_Affordability_LTI"] = (
+        df["LoanOriginalAmount"].div(annual_income).fillna(-1)
+    )
+
+    # Reconstruct Estimated Monthly Debt Obligation from DTI and Stated Income
+    df["Credit_and_Affordability_EstMonthlyDebtObligation"] = (
+        df["DebtToIncomeRatio"] * df["StatedMonthlyIncome"]
+    )
+
+    # Absolute Disposable Income Proxy (Dollar cash buffer left over)
+    df["Credit_and_Affordability_DisposableIncome"] = (
+        df["StatedMonthlyIncome"]
+        - df["Credit_and_Affordability_EstMonthlyDebtObligation"]
+    )
+
+    # Re-engineered Total Revolving Credit Utilization
+    total_revolving_limit = (
+        df["RevolvingCreditBalance"] + df["AvailableBankcardCredit"]
+    )
+    df["Credit_and_Affordability_TotalUtilization"] = (
+        df["RevolvingCreditBalance"].div(total_revolving_limit).fillna(0)
+    )
+    df["Credit_and_Affordability_TotalUtilization"] = df[
+        "Credit_and_Affordability_TotalUtilization"
+    ].clip(0.0, 2.0)
+
+    # =========================================================================
+    # 2. CREDIT DEPTH, VELOCITY & VINTAGE METRICS (BUREAU DATA)
+    # =========================================================================
+
+    # Credit Line Utilization Burden (How extended are they across open lines?)
+    df["Credit_and_Affordability_OpenToTotalLineRatio"] = (
+        df["OpenCreditLines"].div(df["CurrentCreditLines"]).fillna(0)
+    )
+
+    # Inquiry Velocity (Credit-seeking density in the last 6 months)
+    df["Credit_and_Affordability_InquiryVelocity"] = df[
+        "InquiriesLast6Months"
+    ].div(df["TotalInquiries"] + 1)
+
+    # Delinquency Vintage Ratio (Is delinquency recent or historical?)
+    df["Credit_and_Affordability_RecentDelinquencyShare"] = df[
+        "CurrentDelinquencies"
+    ].div(df["DelinquenciesLast7Years"] + 1)
+
+    # =========================================================================
+    # 3. HISTORICAL PROSPER ACTIVITY (ANTI-DATA LEAKAGE STRATEGY)
+    # =========================================================================
+
+    # Explicitly calculate historical metrics ONLY if they are a repeat borrower.
+    # First-time borrowers are filled with -1 so tree models (XGBoost/LightGBM)
+    # can explicitly isolate them without mixing them up with "perfect" history.
+
+    is_repeat = df["TotalProsperLoans"] > 0
+
+    # Initialize columns with -1 sentinel value
+    df["Historical_Prosper_Activity_OnTimeRate"] = -1.0
+    df["Historical_Prosper_Activity_OutstandingDebtRatio"] = -1.0
+
+    # Calculate only for rows where true historical data actually exists
+    df.loc[is_repeat, "Historical_Prosper_Activity_OnTimeRate"] = df[
+        "OnTimeProsperPayments"
+    ].div(df["TotalProsperPaymentsBilled"])
+    df.loc[is_repeat, "Historical_Prosper_Activity_OutstandingDebtRatio"] = df[
+        "ProsperPrincipalOutstanding"
+    ].div(df["ProsperPrincipalBorrowed"])
+
+    # Clean up any potential calculation NaNs within the subsetted repeat borrowers
+    df["Historical_Prosper_Activity_OnTimeRate"] = df[
+        "Historical_Prosper_Activity_OnTimeRate"
+    ].fillna(-1.0)
+    df["Historical_Prosper_Activity_OutstandingDebtRatio"] = df[
+        "Historical_Prosper_Activity_OutstandingDebtRatio"
+    ].fillna(-1.0)
 
     return df
 
