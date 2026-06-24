@@ -141,8 +141,11 @@ def run_finetune(name, build_estimator, search_space, seed_config, int_keys) -> 
     res.to_csv(RESULTS_DIR / f"pd_finetune_{name}.csv", index=False)
     print("\n" + res.to_string(index=False))
 
-    joblib.dump({"preprocessor": pre, "model": calibrated, "features": F.MODEL_FEATURES,
-                 "best_config": best}, OUT_DIR / f"pd_{name}.joblib")
+    # Save the calibrated model (for scoring) AND the raw fitted estimator (for SHAP,
+    # which explains the pre-calibration booster) + the preprocessor + feature order.
+    joblib.dump({"preprocessor": pre, "model": calibrated, "estimator": est,
+                 "features": F.MODEL_FEATURES, "best_config": best},
+                OUT_DIR / f"pd_{name}.joblib")
     test_auc = float(M.pd_metrics(yte, cal_prob)["AUC"])
     (RESULTS_DIR / f"pd_{name}_best_config.json").write_text(json.dumps(
         {"best_config": best, "cv_auc": cv_auc, "test_auc_calibrated": test_auc}, indent=2))

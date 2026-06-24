@@ -37,7 +37,7 @@ main risk drivers.
 | B | AutoML baselines — PD/EAD/LGD + lazy/champion (`train_baselines.py`) | ✅ Done |
 | C | `RiskPredictor` serving interface (`modeling/common/predictor.py`)   | ✅ Done |
 | D | Streamlit Win98 frontend (`app/app.py`)                          | ✅ Done — **v1** |
-| E | Fine-tuned models (XGBoost, calibrated) behind the toggle        | Not started |
+| E | Fine-tuned PD (LightGBM, calibrated) + SHAP, behind the toggle    | ✅ PD shipped |
 
 **v1 = Steps A–D**: a locally-run Win98 dashboard scoring PD/LGD/EAD/EL on AutoML
 baselines, with the AutoML-vs-fine-tuned toggle in place. Step E slots fine-tuned

@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "modeling"))
 sys.path.insert(0, str(REPO_ROOT / "data"))
 
-from common.predictor import RiskPredictor, available_families  # noqa: E402
+from common.predictor import RiskPredictor, available_families, FAMILY_LABELS  # noqa: E402
 
 # DATA_DICTIONARY §10 — ListingCategory codes (stored as strings in the model).
 PURPOSE = {
@@ -95,6 +95,13 @@ CSS = """
   }
   .w98-statusbar span.fixed { flex: 0 0 auto; }
   h1, h2, h3 { font-size: 15px !important; }
+  /* SHAP driver rows */
+  .drv { display: flex; justify-content: space-between; align-items: center;
+         background: #fff; border: 2px solid; border-color: #808080 #FFFFFF #FFFFFF #808080;
+         padding: 3px 8px; margin: 3px 0; font-size: 12px; }
+  .drv .up { color: #a00000; font-weight: bold; }
+  .drv .down { color: #006000; font-weight: bold; }
+  .drv-note { font-size: 11px; color: #404040; margin-top: 6px; }
 </style>
 """
 
@@ -162,8 +169,8 @@ def decision(pd_: float, loss_rate: float) -> tuple[str, str]:
 
 
 @st.cache_resource
-def get_predictor(family: str) -> RiskPredictor:
-    return RiskPredictor(family)
+def get_predictor() -> RiskPredictor:
+    return RiskPredictor()
 
 
 def render_result(family: str, loan_amt: float, r: dict) -> None:
@@ -172,7 +179,7 @@ def render_result(family: str, loan_amt: float, r: dict) -> None:
     st.markdown(
         f"""
         <div class="w98-window">
-          <div class="w98-titlebar"><span>📊 Risk Assessment — {family}</span><span class="controls">_ ▢ ✕</span></div>
+          <div class="w98-titlebar"><span>📊 Risk Assessment — {FAMILY_LABELS.get(family, family)}</span><span class="controls">_ ▢ ✕</span></div>
           <div class="body">
             <div class="metric"><span>Probability of Default (PD)</span><b>{r['pd']:.1%}</b></div>
             <div class="metric"><span>Loss Given Default (LGD)</span><b>{r['lgd']:.1%}</b></div>
@@ -180,6 +187,30 @@ def render_result(family: str, loan_amt: float, r: dict) -> None:
             <div class="metric el"><span>Expected Loss&nbsp;&nbsp;(PD × LGD × EAD)</span><b>${r['el']:,.0f}</b></div>
             <div class="metric"><span>Implied loss rate on ${loan_amt:,.0f}</span><b>{loss_rate:.2%}</b></div>
             <div class="verdict {cls}">{verdict}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_explanation(drivers: list) -> None:
+    """Render the per-borrower SHAP reason codes (LightGBM PD) as a Win98 panel."""
+    if not drivers:
+        return
+    rows = ""
+    for feat, val in drivers:
+        cls, arrow = ("up", "▲ raises risk") if val > 0 else ("down", "▼ lowers risk")
+        rows += (f'<div class="drv"><span>{feat}</span>'
+                 f'<span class="{cls}">{arrow} ({val:+.2f})</span></div>')
+    st.markdown(
+        f"""
+        <div class="w98-window">
+          <div class="w98-titlebar"><span>🔍 Why? — top PD drivers (SHAP)</span><span class="controls">_ ▢ ✕</span></div>
+          <div class="body">
+            {rows}
+            <div class="drv-note">Log-odds contribution to this borrower's default probability,
+            from the LightGBM model. Positive pushes PD up, negative pushes it down.</div>
           </div>
         </div>
         """,
@@ -202,9 +233,9 @@ def main() -> None:
         st.error("No trained models found. Run:  python modeling/train_baselines.py")
         st.stop()
 
-    family = st.radio("Model", fams, horizontal=True,
-                      format_func=lambda x: {"automl": "AutoML baseline",
-                                             "finetuned": "Fine-tuned"}.get(x, x))
+    family = st.radio("PD model", fams, horizontal=True,
+                      format_func=lambda x: FAMILY_LABELS.get(x, x))
+    st.caption("Toggle swaps the PD model only; EAD and LGD use the AutoML baseline in both.")
 
     left, right = st.columns([1.15, 1])
     with left:
@@ -266,9 +297,12 @@ def main() -> None:
                 TotalProsperLoans=prior_loans, OnTimeProsperPayments=ontime,
             )
             inputs = build_inputs(form)
+            rp = get_predictor()
             with st.spinner("Scoring…"):
-                result = get_predictor(family).assess(inputs)
+                result = rp.assess(inputs, family)
             render_result(family, float(loan_amt), result)
+            if family == "finetuned":
+                render_explanation(rp.explain_pd(inputs))
         else:
             st.markdown(
                 '<div class="w98-window"><div class="w98-titlebar"><span>📊 Risk Assessment</span>'

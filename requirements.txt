@@ -7,5 +7,6 @@ scipy
 AutoGluon
 xgboost
 flaml
+shap
 streamlit
 matplotlib
