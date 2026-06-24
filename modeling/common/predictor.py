@@ -47,8 +47,19 @@ class RiskPredictor:
         self.lgd = TabularPredictor.load(str(LGD_DIR))
         self.pd_automl = TabularPredictor.load(str(PD_DIR)) if PD_DIR.exists() else None
         self.pd_lgbm = joblib.load(LGBM_PD) if LGBM_PD.exists() else None
+        # Persisted KMeans pipeline (impute->quantile-scale->cluster) for RiskCluster; the
+        # SAME object fit on train is applied here in production (no re-fit, no leakage).
+        self.risk_cluster = joblib.load(F.RISK_CLUSTER_PATH) if F.RISK_CLUSTER_PATH.exists() else None
         self.defaults = json.loads(DEFAULTS_PATH.read_text())
         self._explainer = None
+
+    def _engineer(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Add the engineered features + the RiskCluster label to a scoring row, exactly as
+        the fine-tuned model saw them in training (feature_engineering then assign_risk_cluster)."""
+        Xfe = F.feature_engineering(X)
+        if self.risk_cluster is not None:
+            Xfe["RiskCluster"] = F.assign_risk_cluster(Xfe, self.risk_cluster)
+        return Xfe
 
     def _row(self, inputs: dict) -> pd.DataFrame:
         row = dict(self.defaults)
@@ -60,7 +71,9 @@ class RiskPredictor:
         if family == "finetuned":
             if self.pd_lgbm is None:
                 raise RuntimeError("LightGBM PD model not found — run finetune_lightgbm.py")
-            Xe = self.pd_lgbm["preprocessor"].transform(X)
+            # The fine-tuned model was trained on base + engineered + RiskCluster features,
+            # so reproduce all of them on the scoring row before the preprocessor sees it.
+            Xe = self.pd_lgbm["preprocessor"].transform(self._engineer(X))
             return float(self.pd_lgbm["model"].predict_proba(Xe)[:, 1][0])
         proba = self.pd_automl.predict_proba(X)
         pcol = 1 if 1 in proba.columns else proba.columns[-1]
@@ -85,7 +98,7 @@ class RiskPredictor:
         import shap
 
         X = self._row(inputs)
-        Xe = self.pd_lgbm["preprocessor"].transform(X)
+        Xe = self.pd_lgbm["preprocessor"].transform(self._engineer(X))
         if self._explainer is None:
             self._explainer = shap.TreeExplainer(self.pd_lgbm["estimator"])
         sv = self._explainer.shap_values(Xe)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -28,6 +29,12 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_CSV = REPO_ROOT / "data" / "raw" / "prosperLoanData.csv"
 PROCESSED_DIR = REPO_ROOT / "data" / "processed"
+
+# Macro overlay (point-in-time unemployment + fed funds at origination). Pulled by
+# build_macro_features.py; the pipeline joins it only if this file exists (graceful no-op
+# otherwise), so the repo runs fine before the data is fetched.
+MACRO_CSV = REPO_ROOT / "data" / "raw" / "macro_monthly.csv"
+MACRO_FEATURES = ["macro_unemployment", "macro_fedfunds"]
 
 # --------------------------------------------------------------------------- #
 # Population (DATA_DICTIONARY §1, §11.5, §11.6)                                 #
@@ -39,7 +46,7 @@ POST_2009_CUTOFF = pd.Timestamp("2009-07-01")  # ProsperScore/Rating feature bre
 # --------------------------------------------------------------------------- #
 # Raw feature columns by bucket (DATA_DICTIONARY §2-4)                          #
 # --------------------------------------------------------------------------- #
-CREDIT_BUREAU = [f"CREDIT_BUREAU_{col}" for col in [
+CREDIT_BUREAU = [
     "CreditScoreRangeLower", "CreditScoreRangeUpper",
     "CurrentCreditLines", "OpenCreditLines", "TotalCreditLinespast7years",
     "TotalTrades", "TradesNeverDelinquent (percentage)", "TradesOpenedLast6Months",
@@ -48,45 +55,154 @@ CREDIT_BUREAU = [f"CREDIT_BUREAU_{col}" for col in [
     "CurrentDelinquencies", "AmountDelinquent", "DelinquenciesLast7Years",
     "PublicRecordsLast10Years", "PublicRecordsLast12Months",
     "InquiriesLast6Months", "TotalInquiries", "DebtToIncomeRatio",
-]]
-APPLICATION_NUMERIC = [f"APPLICATION_NUMERIC_{col}" for col in [
+]
+APPLICATION_NUMERIC = [
     "Term", "LoanOriginalAmount", "StatedMonthlyIncome", "EmploymentStatusDuration",
-]]
-APPLICATION_CATEGORICAL = [f"APPLICATION_CATEGORICAL_{col}" for col in [
+]
+APPLICATION_CATEGORICAL = [
     "IncomeRange", "IncomeVerifiable", "EmploymentStatus", "Occupation",
     "BorrowerState", "ListingCategory (numeric)", "IsBorrowerHomeowner", "CurrentlyInGroup",
-]]
+]
 # Prior-Prosper history (Bucket 3): informative nulls -> fill 0 + is_repeat_borrower.
-PRIOR_PROSPER = [f"PRIOR_PROSPER_{col}" for col in [
+PRIOR_PROSPER = [
     "TotalProsperLoans", "TotalProsperPaymentsBilled", "OnTimeProsperPayments",
     "ProsperPaymentsLessThanOneMonthLate", "ProsperPaymentsOneMonthPlusLate",
     "ProsperPrincipalBorrowed", "ProsperPrincipalOutstanding", "ScorexChangeAtTimeOfListing",
-]]
+]
 
 # Derived features (DATA_DICTIONARY §9).
-DERIVED_NUMERIC = [f"DERIVED_NUMERIC_{col}" for col in [
+DERIVED_NUMERIC = [
     "credit_history_months", "credit_score_mid", "loan_to_income",
     "stated_income_log", "is_repeat_borrower", "income_unverified", "dti_capped_flag",
-]]
-DERIVED_CATEGORICAL = [f"DERIVED_CATEGORICAL_{col}" for col in ["bankcard_util_bucket"]]
+]
+DERIVED_CATEGORICAL = ["bankcard_util_bucket"]
 
-# The model input contract. Every downstream consumer reads this.
+# The model input contract for the AutoML BASELINE. Every downstream consumer reads this.
+# Feature names are the real Prosper / derived column names (no bucket prefix): the bucket
+# is already conveyed by the list variable each name lives in, so prefixing the strings
+# would be redundant, would decouple the names from the raw data + DATA_DICTIONARY, and
+# would force renaming the actual DataFrame columns everywhere for no modeling benefit.
 MODEL_FEATURES = (
     CREDIT_BUREAU + APPLICATION_NUMERIC + APPLICATION_CATEGORICAL
     + PRIOR_PROSPER + DERIVED_NUMERIC + DERIVED_CATEGORICAL
 )
-CATEGORICAL_FEATURES = APPLICATION_CATEGORICAL + DERIVED_CATEGORICAL
+CATEGORICAL_FEATURES = APPLICATION_CATEGORICAL + DERIVED_CATEGORICAL + ["RiskCluster"]
+
+# Engineered features (feature_engineering()). Deliberately NOT in MODEL_FEATURES, so the
+# AutoML baseline stays feature-engineering-free; the fine-tuned challengers opt in via
+# MODEL_FEATURES + ENGINEERED_FEATURES.
+# The 9 numeric ones are produced by feature_engineering(); RiskCluster (categorical) is the
+# KMeans segment produced by assign_risk_cluster() and appended here so the challengers
+# select it. RiskCluster is also in CATEGORICAL_FEATURES so it is one-hot encoded, not
+# treated as a number.
+_ENGINEERED_NUMERIC = [
+    # NOTE: Credit_and_Affordability_LTI was DROPPED — it was a perfect duplicate of the base
+    # derived feature loan_to_income (Spearman 1.0, VIF 5.6M in the diagnostic).
+    "Credit_and_Affordability_EstMonthlyDebtObligation",
+    "Credit_and_Affordability_DisposableIncome",
+    "Credit_and_Affordability_ResidualIncome",   # cash left after existing debt + the new loan
+    "Credit_and_Affordability_ReferencePTI",      # new-loan payment / income at a reference APR
+    "Credit_and_Affordability_TotalUtilization",
+    "Credit_and_Affordability_OpenToTotalLineRatio",
+    "Credit_and_Affordability_InquiryVelocity",
+    "Credit_and_Affordability_RecentDelinquencyShare",
+    "Historical_Prosper_Activity_OnTimeRate",
+    "Historical_Prosper_Activity_OutstandingDebtRatio",
+    # New-information flags (not transforms of existing features):
+    "Affordability_IncomeBand_Mismatch",   # stated income inconsistent with self-reported band
+    "Affordability_Income_Undefined",       # zero/undefined income (the DisposableIncome sentinel)
+]
+ENGINEERED_FEATURES = _ENGINEERED_NUMERIC + ["RiskCluster"]
+
+# Reference APR used to compute a rate-independent loan payment for Residual Income and
+# Reference-rate PTI. The real BorrowerRate is an excluded price field, so we price every
+# loan at one fixed benchmark rate to get a comparable monthly payment.
+REFERENCE_APR = 0.15
+
+# ----------------------------------------------------------------------------- #
+# Monotonic-constraint direction map (for LightGBM/XGBoost monotone_constraints) #
+# ----------------------------------------------------------------------------- #
+# In plain language: each number says which way risk is ALLOWED to move as the feature goes up.
+#   +1  = as this feature goes UP, predicted default risk may only go UP   (or stay flat)
+#   -1  = as this feature goes UP, predicted default risk may only go DOWN (or stay flat)
+#    0  = no constraint (let the data decide; used where direction is genuinely ambiguous)
+# Constraints encode domain/regulatory knowledge and stop the model from carving
+# noise-driven wiggles, improving robustness and defensibility. Only numeric features get a
+# direction; one-hot categoricals have no natural ordering, so they are left unconstrained.
+MONOTONE_DIRECTIONS = {
+    # --- more of these = MORE risk (+1) ---
+    "DebtToIncomeRatio": +1,            # more debt relative to income
+    "BankcardUtilization": +1,          # closer to maxed-out cards
+    "InquiriesLast6Months": +1,         # recent credit-seeking
+    "TotalInquiries": +1,
+    "CurrentDelinquencies": +1,         # currently behind on accounts
+    "AmountDelinquent": +1,
+    "DelinquenciesLast7Years": +1,
+    "PublicRecordsLast10Years": +1,     # bankruptcies / judgments
+    "PublicRecordsLast12Months": +1,
+    "RevolvingCreditBalance": +1,       # more revolving debt carried
+    "LoanOriginalAmount": +1,           # bigger loan to repay
+    "Term": +1,                         # longer exposure window
+    "loan_to_income": +1,               # bigger loan relative to income
+    "Credit_and_Affordability_EstMonthlyDebtObligation": +1,
+    "Credit_and_Affordability_ReferencePTI": +1,        # heavier new-loan payment burden
+    "Credit_and_Affordability_TotalUtilization": +1,
+    "Credit_and_Affordability_InquiryVelocity": +1,
+    "Credit_and_Affordability_RecentDelinquencyShare": +1,
+    "Historical_Prosper_Activity_OutstandingDebtRatio": +1,
+    "Affordability_IncomeBand_Mismatch": +1,            # stated income looks inconsistent
+    "Affordability_Income_Undefined": +1,               # zero/undefined income
+    # --- more of these = LESS risk (-1) ---
+    "credit_score_mid": -1,             # higher bureau score
+    "CreditScoreRangeLower": -1,
+    "CreditScoreRangeUpper": -1,
+    "StatedMonthlyIncome": -1,          # more income
+    "stated_income_log": -1,
+    "credit_history_months": -1,        # longer, deeper credit history
+    "AvailableBankcardCredit": -1,      # more unused credit headroom
+    "Credit_and_Affordability_DisposableIncome": -1,    # more cash buffer
+    "Credit_and_Affordability_ResidualIncome": -1,      # more cash left after the new loan
+    "Historical_Prosper_Activity_OnTimeRate": -1,       # better prior payment record
+    # everything else (counts of lines/trades, prior-Prosper volumes, categoricals): 0 / omit.
+}
+
+# Annual-income bounds implied by each self-reported IncomeRange band (for the plausibility
+# flag below). Used to check stated monthly income against the band the borrower selected.
+INCOME_BANDS = {
+    "$0": (0, 0),
+    "Not employed": (0, 0),
+    "$1-24,999": (1, 24_999),
+    "$25,000-49,999": (25_000, 49_999),
+    "$50,000-74,999": (50_000, 74_999),
+    "$75,000-99,999": (75_000, 99_999),
+    "$100,000+": (100_000, np.inf),
+}
+
+# RiskCluster — an unsupervised KMeans segment built from the features below (base + a few
+# engineered). Fit on TRAIN only (leakage-safe), persisted, and re-applied in production.
+# Added to ENGINEERED_FEATURES / CATEGORICAL_FEATURES once built (see build_risk_clusters.py).
+RISK_CLUSTER_PATH = REPO_ROOT / "models" / "risk_cluster.joblib"
+CLUSTER_FEATURES = [
+    "loan_to_income",  # was Credit_and_Affordability_LTI (dropped); identical information
+    "DebtToIncomeRatio",
+    "BankcardUtilization",
+    "InquiriesLast6Months",
+    "Credit_and_Affordability_DisposableIncome",
+    "Credit_and_Affordability_TotalUtilization",
+    "Credit_and_Affordability_OpenToTotalLineRatio",
+    "Credit_and_Affordability_InquiryVelocity",
+]
 
 # Kept in the processed frame for label building / benchmarking — NOT features.
-LABEL_SUPPORT = [f"SUPPORT_{col}" for col in [
+LABEL_SUPPORT = [
     "LoanStatus", "LoanOriginalAmount",
     "LP_CustomerPrincipalPayments", "LP_NetPrincipalLoss",
     "LP_GrossPrincipalLoss", "LP_NonPrincipalRecoverypayments",
-]]
-BENCHMARK_COLS = [f"BENCHMARK_{col}" for col in ["ProsperScore", "ProsperRating (numeric)"]]
+]
+BENCHMARK_COLS = ["ProsperScore", "ProsperRating (numeric)"]
 
 # Raw columns needed only to compute derived features (not retained as features).
-_DERIVE_SOURCES = [f"DERIVE_SOURCE_{col}" for col in ["DateCreditPulled", "FirstRecordedCreditLine"]]
+_DERIVE_SOURCES = ["DateCreditPulled", "FirstRecordedCreditLine"]
 
 PD_TARGET = "is_bad"
 
@@ -145,22 +261,33 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     # 1. CREDIT CAPACITY, LEVERAGE & AFFORDABILITY METRICS
     # =========================================================================
 
-    # Loan-to-Income (LTI) Ratio (Annualized Income)
-    # Using .div() to prevent zero income division crashing the pipeline
-    annual_income = df["StatedMonthlyIncome"] * 12
-    df["Credit_and_Affordability_LTI"] = (
-        df["LoanOriginalAmount"].div(annual_income).fillna(-1)
-    )
+    # (LTI was dropped — duplicate of base loan_to_income.)
 
     # Reconstruct Estimated Monthly Debt Obligation from DTI and Stated Income
     df["Credit_and_Affordability_EstMonthlyDebtObligation"] = (
         df["DebtToIncomeRatio"] * df["StatedMonthlyIncome"]
     )
 
-    # Absolute Disposable Income Proxy (Dollar cash buffer left over)
+    # Absolute Disposable Income Proxy (Dollar cash buffer left over BEFORE the new loan)
     df["Credit_and_Affordability_DisposableIncome"] = (
         df["StatedMonthlyIncome"]
         - df["Credit_and_Affordability_EstMonthlyDebtObligation"]
+    )
+
+    # New-loan monthly payment at a fixed REFERENCE_APR (the real rate is an excluded price
+    # field, so we price every loan at one benchmark rate for a comparable payment).
+    _c = REFERENCE_APR / 12.0
+    ref_payment = df["LoanOriginalAmount"] * _c / (1.0 - (1.0 + _c) ** (-df["Term"]))
+
+    # Reference-rate PTI: the NEW loan's payment as a share of monthly income (vs DTI, which
+    # is ALL existing debt). A single-loan affordability ratio.
+    df["Credit_and_Affordability_ReferencePTI"] = ref_payment.div(df["StatedMonthlyIncome"])
+
+    # Residual income (VA-underwriting style): absolute dollars left after existing debt AND
+    # the new loan payment. Captures resilience that ratios miss — two borrowers at the same
+    # DTI differ greatly if one keeps $300/mo and the other $3,000/mo.
+    df["Credit_and_Affordability_ResidualIncome"] = (
+        df["Credit_and_Affordability_DisposableIncome"] - ref_payment
     )
 
     # Re-engineered Total Revolving Credit Utilization
@@ -223,7 +350,104 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         "Historical_Prosper_Activity_OutstandingDebtRatio"
     ].fillna(-1.0)
 
+    # =========================================================================
+    # 4. NEW-INFORMATION FLAGS (data-quality / plausibility, not transforms)
+    # =========================================================================
+
+    # (#5) Income-band plausibility: does stated monthly income, annualized, fall OUTSIDE the
+    # IncomeRange band the borrower selected? A mismatch is a self-report-reliability / fraud
+    # signal that no existing feature captures. Binary IS the right encoding — it's a yes/no
+    # consistency check, not a magnitude (a signed gap would just re-encode income, which the
+    # model already has). Missing IncomeRange -> not flagged (cannot check).
+    annual = df["StatedMonthlyIncome"] * 12
+    lo = df["IncomeRange"].map(lambda b: INCOME_BANDS.get(b, (-np.inf, np.inf))[0])
+    hi = df["IncomeRange"].map(lambda b: INCOME_BANDS.get(b, (-np.inf, np.inf))[1])
+    df["Affordability_IncomeBand_Mismatch"] = (
+        ((annual < lo) | (annual > hi)) & df["IncomeRange"].notna()
+    ).astype("int8")
+
+    # (#6) Sentinel/undefined flag: zero or undefined stated income is what drives the -1
+    # sentinels in LTI / DisposableIncome. An explicit binary separates "undefined" from a
+    # genuinely low value (cleaner than relying on -1 alone, and essential for any linear /
+    # WOE model where -1 would otherwise be read as a magnitude).
+    df["Affordability_Income_Undefined"] = (df["StatedMonthlyIncome"] <= 0).astype("int8")
+
+    # --- Validation hardening: guarantee no inf / NaN in engineered features ----------
+    # Several ratios divide by a column that can be exactly 0 (zero income, zero credit
+    # lines, zero prior payments). `.fillna()` only catches 0/0 -> NaN, not x/0 -> +/-inf;
+    # the validation found inf in LTI and OpenToTotalLineRatio. inf crashes sklearn's
+    # RandomForest and poisons tree splits, so replace inf with NaN and fill ALL remaining
+    # engineered NaN with the function's own -1 "undefined" sentinel. Using -1 (not a
+    # median) keeps this leakage-free — no statistic is learned from the data.
+    df[_ENGINEERED_NUMERIC] = (
+        df[_ENGINEERED_NUMERIC].replace([np.inf, -np.inf], np.nan).fillna(-1.0)
+    )
+
     return df
+
+
+# --------------------------------------------------------------------------- #
+# RiskCluster — unsupervised borrower segmentation                            #
+# --------------------------------------------------------------------------- #
+def fit_risk_clusters(df: pd.DataFrame, k_range=range(3, 8), sample: int = 4000,
+                      random_state: int = 42):
+    """Fit median-impute -> StandardScaler -> KMeans on CLUSTER_FEATURES (TRAIN ONLY).
+
+    Scaling is required because KMeans uses Euclidean distance and the features live on
+    very different scales (dollars vs ratios). Imputation handles the raw NaNs (DTI etc.);
+    -1 sentinels in the engineered inputs are left as-is. `k` is chosen by the best
+    silhouette score over `k_range` (computed on a random subsample for speed, since
+    silhouette is O(n^2)). Returns (fitted_pipeline, info_dict). Persist the pipeline and
+    re-apply it unchanged to test / production so no statistic leaks across the split.
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.impute import SimpleImputer
+    from sklearn.metrics import silhouette_score
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import QuantileTransformer
+
+    # QuantileTransformer (rank-based -> normal), not StandardScaler/RobustScaler: the
+    # engineered inputs have pathological outliers (absurd self-reported incomes flowing into
+    # DisposableIncome, DTI-cap rows). A mean/std or IQR scaler lets those few extremes
+    # dominate, so KMeans isolates 1-2 of them as singleton clusters (silhouette ~1.0,
+    # useless). Rank-based scaling bounds the tails so clusters form on the bulk structure.
+    def _scaler():
+        return QuantileTransformer(output_distribution="normal",
+                                   n_quantiles=min(1000, len(df)), random_state=random_state)
+
+    X = df[CLUSTER_FEATURES]
+    pre = Pipeline([("impute", SimpleImputer(strategy="median")),
+                    ("scale", _scaler())]).fit(X)
+    Xs = pre.transform(X)
+
+    rng = np.random.RandomState(random_state)
+    idx = rng.choice(len(Xs), size=min(sample, len(Xs)), replace=False)
+    scores, best_k, best_score = {}, None, -1.0
+    for k in k_range:
+        labels = KMeans(n_clusters=k, random_state=random_state, n_init=10).fit_predict(Xs)
+        s = float(silhouette_score(Xs[idx], labels[idx]))
+        scores[k] = s
+        if s > best_score:
+            best_k, best_score = k, s
+
+    pipe = Pipeline([
+        ("impute", SimpleImputer(strategy="median")),
+        ("scale", _scaler()),
+        ("kmeans", KMeans(n_clusters=best_k, random_state=random_state, n_init=10)),
+    ]).fit(X)
+    return pipe, {"best_k": best_k, "silhouette": best_score, "scores": scores}
+
+
+def assign_risk_cluster(df: pd.DataFrame, pipe=None) -> pd.Series:
+    """Return the RiskCluster label (string, e.g. '0'..'k-1') for each row.
+
+    Loads the persisted pipeline if none is passed. Expects CLUSTER_FEATURES to be present,
+    so call AFTER feature_engineering(). Same scaler+KMeans used in training and production.
+    """
+    if pipe is None:
+        pipe = joblib.load(RISK_CLUSTER_PATH)
+    labels = pipe.predict(df[CLUSTER_FEATURES])
+    return pd.Series(labels, index=df.index).astype(str)
 
 
 # --------------------------------------------------------------------------- #
@@ -274,10 +498,37 @@ def cast_categoricals(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def assign_macro_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Join point-in-time macro (unemployment, fed funds) at the origination month.
+
+    Macro at origination is known at the underwriting decision -> leakage-safe. No-op (NaN
+    columns) if build_macro_features.py hasn't been run yet, so the pipeline never breaks.
+    """
+    out = df.copy()
+    if not MACRO_CSV.exists():
+        for c in MACRO_FEATURES:
+            out[c] = np.nan
+        return out
+    macro = pd.read_csv(MACRO_CSV, dtype={"ym": str}).set_index("ym")
+    ym = pd.to_datetime(out["LoanOriginationDate"], errors="coerce").dt.to_period("M").astype(str)
+    for c in MACRO_FEATURES:
+        out[c] = ym.map(macro[c]) if c in macro.columns else np.nan
+    return out
+
+
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """Filtered+derived frame: MODEL_FEATURES + label-support + benchmarks + is_bad."""
+    """Filtered+derived+engineered frame: MODEL_FEATURES + ENGINEERED_FEATURES (+ macro if
+    pulled) + label-support + benchmarks + is_bad. Engineered/macro columns ride along in the
+    processed data so the challengers can opt in; the AutoML baseline selects MODEL_FEATURES
+    and ignores them."""
     df = add_derived_features(df)
-    keep = list(dict.fromkeys(MODEL_FEATURES + LABEL_SUPPORT + BENCHMARK_COLS))
+    df = feature_engineering(df)
+    macro_cols = []
+    if MACRO_CSV.exists():           # only join when the macro data has been fetched
+        df = assign_macro_features(df)
+        macro_cols = MACRO_FEATURES
+    keep = list(dict.fromkeys(
+        MODEL_FEATURES + ENGINEERED_FEATURES + macro_cols + LABEL_SUPPORT + BENCHMARK_COLS))
     keep = [c for c in keep if c in df.columns]
     out = df[keep].copy()
     out[PD_TARGET] = build_pd_target(df).to_numpy()
