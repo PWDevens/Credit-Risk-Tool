@@ -30,7 +30,7 @@ def main():
     
     Note: PastDue status will be accompanied by a delinquency bucket. 
     """
-    df['LoanStatus'] = df['LoanStatus'].apply(lambda x: 1 if x == 'Default' else 0)
+    df['LoanStatus'] = df['LoanStatus'].apply(lambda x: 1 if x in ['Defaulted', 'Chargedoff'] else 0)
 
     # Split the dataset into training and testing sets
     # Stratifying the binary target to keep default rates equal in train/test 

@@ -4,37 +4,44 @@ A lender-facing credit-risk tool that estimates the **Expected Loss** of a consu
 loan from borrower and loan characteristics, built on the
 [Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
 
-It models each component of the standard credit-risk identity and combines them:
+It models each component of the regulatory credit-loss identity and combines them:
 
 ```
-Expected Loss (EL) = PD × EAD × LGD
+Expected Loss (EL) = PD × LGD × EAD
 ```
 
 | Component | Meaning | Model |
 |-----------|---------|-------|
-| **PD**  | Probability of Default        | Calibrated binary classifier (XGBoost), benchmarked against an AutoML baseline |
-| **EAD** | Exposure at Default ($)       | Regressor, benchmarked against a full-exposure (CCF=100%) baseline |
+| **PD**  | Probability of Default        | Calibrated binary classifier (XGBoost), benchmarked against an AutoML baseline **and** Prosper's own grade ranking |
 | **LGD** | Loss Given Default (fraction) | Fractional regressor, benchmarked against a mean-LGD baseline |
+| **EAD** | Exposure at Default ($)       | Regressor, benchmarked against a full-exposure baseline |
 
-A local **Streamlit** app lets a lender enter a borrower/loan and see PD, EAD, LGD,
+A local **Streamlit** app lets a lender enter a borrower/loan and see PD, LGD, EAD,
 and the resulting Expected Loss in dollars, with a per-borrower explanation of the
 main risk drivers.
+
+> **Governance.** [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md) is the per-variable treatment
+> authority — which fields are features, benchmarks, loss-only labels, or excluded, and why.
+> `features.py` is the executable feature manifest; where the two disagree, `features.py`
+> wins. The build plan lives in [`.pipeline/PROJECT_PLAN.md`](.pipeline/PROJECT_PLAN.md).
 
 ---
 
 ## Project status
 
-🚧 **In development.** See [`.pipeline/PROJECT_PLAN.md`](.pipeline/PROJECT_PLAN.md) for the
-full plan and current state.
+🚧 **In development.**
 
 | Step | Component | Status |
 |------|-----------|--------|
-| 1 | Data cleaning pipeline            | In progress |
-| 2 | PD baseline (AutoML)              | Not started |
-| 3 | PD model (XGBoost, calibrated)    | Not started |
-| 4 | EAD model (+ lazy baseline)       | Not started |
-| 5 | LGD model (+ lazy baseline)       | Not started |
-| 6 | Streamlit frontend                | Not started |
+| A | Feature manifest + population/labels (`features.py`)             | ✅ Done |
+| B | AutoML baselines — PD/EAD/LGD + lazy/champion (`train_baselines.py`) | ✅ Done |
+| C | `RiskPredictor` serving interface (`modeling/common/predictor.py`)   | ✅ Done |
+| D | Streamlit Win98 frontend (`app/app.py`)                          | ✅ Done — **v1** |
+| E | Fine-tuned models (XGBoost, calibrated) behind the toggle        | Not started |
+
+**v1 = Steps A–D**: a locally-run Win98 dashboard scoring PD/LGD/EAD/EL on AutoML
+baselines, with the AutoML-vs-fine-tuned toggle in place. Step E slots fine-tuned
+models in behind that toggle with no UI change.
 
 ---
 
@@ -43,24 +50,28 @@ full plan and current state.
 ```
 data/
   loader.py            Pull raw data from Kaggle (via kagglehub)
-  data-processor.py    Clean + split into train/test
+  features.py          Authoritative feature manifest: treatment, population, derived features
+  data_cleaning.py     Imputation pipeline (driven by the manifest)
+  data_processor.py    Train/test split (stratified on the binary target)
   data_analysis.py     EDA toolkit (missing report, WOE/IV ranking, target-rate views)
-  data-cleaning.ipynb  Exploratory cleaning notebook
   raw/                 Raw downloaded dataset (gitignored)
   processed/           Train/test splits (gitignored)
 modeling/
-  probability-of-default/  PD baseline + XGBoost model
+  probability-of-default/  PD baselines + XGBoost model
   exposure-at-default/     EAD baseline + model
   loss-given-default/      LGD baseline + model
-  common/                  Shared feature list, metrics, model I/O
+  model-results/           Saved baseline/model metrics tables
+  common/                  Shared metrics + model I/O (planned)
 app/                   Streamlit frontend
-models/                Serialized pd/ead/lgd model artifacts
+models/                Serialized pd/lgd/ead model artifacts
 ```
 
-> The shared origination-time feature list in `modeling/common/` is the single source of
-> truth for model inputs. Only features known **at loan origination** are used — outcome
-> columns (`LP_*` payments/losses, `ClosedDate`, delinquency cycles, Prosper's own ratings)
-> are excluded as inputs to avoid leakage, and are used only to construct EAD/LGD targets.
+> `features.py` is the single source of truth for model inputs. Only fields knowable **at
+> the underwriting decision** are used. Excluded as inputs: **outcome fields** (`LP_*`
+> payments/losses, `ClosedDate`, delinquency cycles — these build EAD/LGD *labels*),
+> **price fields** set by underwriting (`BorrowerRate`, `BorrowerAPR`, `LenderYield`,
+> `MonthlyLoanPayment`), and **Prosper's own scores/ratings** (kept as benchmarks, not
+> features). See `DATA_DICTIONARY.md` §11 for the full rule set.
 
 ---
 
@@ -79,14 +90,22 @@ pip install -r requirements.txt
 Kaggle API credentials are read from `secrets/.env` (gitignored). Provide your
 Kaggle username and key there for `loader.py`.
 
-### 3. Get the data
+### 3. Build the data and models
 
 ```bash
 python data/loader.py            # downloads the raw dataset to data/raw/
-python data/data-processor.py    # cleans + writes train/test to data/processed/
+python data/features.py          # population filter + labels -> data/processed/ splits
+python modeling/train_baselines.py   # trains AutoGluon PD/EAD/LGD -> models/ + metrics
 ```
 
-### 4. Run the app (once models are trained)
+`train_baselines.py` uses a small AutoML budget by default for fast iteration; for a
+production-grade baseline raise it:
+
+```bash
+AUTOML_TIME_LIMIT=600 AUTOML_PRESET=best_quality python modeling/train_baselines.py
+```
+
+### 4. Run the app
 
 ```bash
 streamlit run app/app.py
@@ -96,16 +115,28 @@ streamlit run app/app.py
 
 ## Modeling notes
 
-- **Target.** A loan is "bad" (defaulted) when `LoanStatus ∈ {Defaulted, Chargedoff}`.
-  In-flight loans (`Current`, `PastDue*`, `FinalPaymentInProgress`) are excluded from the
-  PD target since their final outcome is unknown.
+- **Target.** A loan is "bad" when `LoanStatus ∈ {Defaulted, Chargedoff}` → 1; `Completed`
+  → 0. Unresolved loans (`Current`, `PastDue*`, `FinalPaymentInProgress`) are **dropped** —
+  coding them as good would label immature vintages safe (incomplete performance window).
+- **Population scope.** Post-July-2009 originations only, so feature availability is
+  consistent (`ProsperScore`/`ProsperRating`/`Estimated*` are post-2009; `CreditGrade` is
+  pre-2009).
 - **PD metrics.** AUC, Gini (= 2·AUC−1), KS statistic, plus calibration via Brier score
-  and log-loss. PD outputs are calibrated so the Expected Loss product is meaningful.
-- **EAD.** Target ≈ outstanding principal at default
-  (`LoanOriginalAmount − LP_CustomerPrincipalPayments`); lazy baseline assumes full exposure.
-- **LGD.** Target = `LP_NetPrincipalLoss / EAD` (net of recoveries), clipped to [0, 1];
-  expected to be bimodal, so a two-stage cure/severity approach is on the table.
-- **Explainability.** SHAP provides global and per-borrower attributions, surfaced in the app.
+  and log-loss. PD is calibrated so the Expected Loss product is meaningful. Benchmarked
+  against both an AutoML model and Prosper's own grade ranking (challenger vs. champion).
+- **EAD.** Installment loans have no undrawn commitment (no CCF); the label is outstanding
+  principal at default, `LoanOriginalAmount − LP_CustomerPrincipalPayments`. Lazy baseline
+  assumes full exposure.
+- **LGD.** Label = `1 − net recoveries / EAD` (`LP_NetPrincipalLoss / EAD`), clipped to
+  [0, 1]; expected bimodal, so a two-stage cure/severity approach is on the table.
+  PV-discounted recoveries and a Basel **downturn-LGD** view are noted refinements.
+  Validated on calibration / predicted-vs-actual loss, not AUC.
+- **Imputation highlights.** Credit-bureau numerics → median; `DebtToIncomeRatio` →
+  group-median by `IncomeRange` (cap `10.01` flagged, not treated as a value); prior-Prosper
+  fields → fill 0 + `is_repeat_borrower` (informative nulls, never median).
+- **Explainability & fair lending.** SHAP gives global and per-borrower attributions,
+  surfaced in the app. `BorrowerState`/`Occupation` can proxy protected class — handled
+  with care and documented in the model card.
 
 ### Platform note
 

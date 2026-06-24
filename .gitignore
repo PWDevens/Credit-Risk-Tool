@@ -4,3 +4,8 @@ data/raw/
 .venv/
 data/processed/
 .pipeline/
+models/
+modeling/**/automl_model/
+modeling/model-results/
+AutogluonModels/
+*.joblib

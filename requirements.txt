@@ -3,5 +3,9 @@ kagglehub
 numpy
 pandas
 scikit-learn
-auto-sklearn
+scipy
+AutoGluon
+xgboost
+flaml
+streamlit
 matplotlib
