@@ -4,6 +4,9 @@ A lender-facing credit-risk engine that estimates the **Expected Loss** of a con
 turns it into **pricing and provisioning decisions**, built on the
 [Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
 
+## Demo
+<video controls src="demo.mp4" title="Title"></video>
+
 ## The financial modeling
 
 Lending is the business of pricing risk. This project models each component of the regulatory
@@ -58,41 +61,10 @@ in [`docs/`](docs/README.md).
 
 | Step | Component | Status |
 |------|-----------|--------|
-| A | Feature manifest + population/labels (`features.py`)                 | ✅ Done |
-| B | AutoML baselines — PD/EAD/LGD + lazy/champion (`train_baselines.py`) | ✅ Done |
-| C | `RiskPredictor` serving interface (`modeling/common/predictor.py`)   | ✅ Done |
-| D | Streamlit Win98 frontend (`app/app.py`)                             | ✅ Done |
-| E | Fine-tuned PD — XGBoost + SHAP, behind the toggle                    | ✅ Done |
+| v1 | AutoML Baseline, 'RiskPredictor' serving interface, Finetuned PD (XGBoost + SHAP), Streamlit Frontend | ✅  |
+| v2 | Financial Engine for Lender Decisions, Integration into Frontend | ✅  |
+| v3 | Depth, Time-Awareness, Generalizability: Inclusion of Macroeconomic Data with TTC-Anchoring, OOT/Vintage Validation, Time Hazard Model, ECL Backtesting, Packaging  | ✅  |
 
-**v1 (Steps A–E) is complete**: a locally-run Win98 dashboard scoring PD/LGD/EAD/EL, with a
-working AutoML-vs-XGBoost PD toggle and per-borrower SHAP. XGBoost is the shipped challenger —
-best-or-tied at the final (v4) feature set against LightGBM and Random Forest (all kept as
-`finetune_*.py` due-diligence scripts).
-
-**v2 — complete.** A financial engine (`modeling/common/finance.py`) turns PD/LGD/EAD into
-lender decisions: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based
-pricing** (break-even and target-return APR), surfaced in the app's "Financials" panel.
-
-**v3 — complete: depth, time-awareness, and validation.** The theme was making the model
-*defensible* the way credit risk is actually validated, not adding surface area. Delivered:
-
-- ✅ **Out-of-time (vintage) validation** — train on earlier originations, test on later
-  (`run_partc.py` / `run_finalize.py`); now the lens every feature decision is judged through.
-- ✅ **Feature-engineering pass** — engineered affordability/credit ratios + an unsupervised
-  `RiskCluster`, measured in a cumulative **v1→v4** ablation matrix (`run_version.py`,
-  `docs/finetuning_matrix.png`). Honest finding: they're largely **redundant** once clustering is
-  in — the ~0.75 AUC ceiling is information-bound, not model-bound.
-- ✅ **Point-in-time macro overlay** — national unemployment + fed funds at origination, kept in
-  **through-the-cycle (TTC)–anchored** form after the out-of-time study showed raw macro is partly
-  a vintage proxy ([docs/01-feature-engineering.md](docs/01-feature-engineering.md)).
-- ✅ **Discrete-time hazard model** (loan-month panel + XGBoost) → a model-driven PD term structure
-  feeding the ECL engine and the app's lifetime pricing, benchmarked against scikit-survival
-  (IPCW concordance, time-dependent AUC, integrated Brier).
-- ✅ **ECL backtest** vs realized dollar losses by vintage — the financial engine is calibrated to
-  within ~2% in **dollars** (overall predicted/realized ratio 1.02).
-- ✅ **Packaging** — topic write-ups for feature engineering, PD finetuning, validation, the hazard
-  model, and ECL backtesting, plus an **SR 11-7-style model card**, all indexed in
-  [docs/](docs/README.md).
 
 **Deferred beyond v3 (future):** regional (state) unemployment overlay (pipeline built —
 `build_state_features.py` — needs the data pulled), prepayment / competing-risks survival, a
