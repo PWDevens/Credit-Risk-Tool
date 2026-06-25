@@ -3,7 +3,7 @@
 v3 is about making the model **defensible**: time-aware, validated out-of-time, and tied back to
 realized dollars. This write-up collects the four charts that carry that story. Each is regenerated
 by a script in `modeling/` (see [Reproduce](#reproduce)); the modeling assumptions and limitations
-behind them live in the [model card](MODEL_CARD.md).
+behind them live in the [model card](model-card.md).
 
 ---
 
@@ -77,5 +77,5 @@ From the repo root with the project `.venv` active, in order:
 
 `results_charts.py` reads the CSVs the earlier scripts write (`modeling/model-results/`) and the
 fitted hazard artifact, and emits `docs/pd_term_structure.png`, `docs/calibration_by_vintage.png`,
-and a committed `docs/ecl_backtest.png`. See the [model card](MODEL_CARD.md) for intended use, data,
+and a committed `docs/ecl_backtest.png`. See the [model card](model-card.md) for intended use, data,
 metrics, limitations, fair-lending treatment, and the reject-inference note.

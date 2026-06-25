@@ -31,8 +31,9 @@ profit / RAROC, and a recommended APR.
   (break-even and target-return APR).
 - **v3 — making it defensible** (in progress). A measured **feature-engineering** pass, a
   point-in-time **macro overlay** kept in *through-the-cycle (TTC)–anchored* form, and
-  **out-of-time (vintage) validation** — the way credit models are actually judged. Plan and
-  decision records: [`docs/V3_PLAN.md`](docs/V3_PLAN.md), [`docs/macro-decision.md`](docs/macro-decision.md).
+  **out-of-time (vintage) validation** — the way credit models are actually judged. Decision
+  record: [`docs/macro-decision.md`](docs/macro-decision.md); the v3 build plan lives in
+  [`.pipeline/v3-plan.md`](.pipeline/v3-plan.md).
 
 See [Project status](#project-status) for the per-step breakdown.
 
@@ -66,7 +67,7 @@ pricing** (break-even and target-return APR), surfaced in the app's "Financials"
 
 **v3 (in progress) — depth, time-awareness, and validation.** The theme is making the model
 *defensible* the way credit risk is actually validated, not adding surface area (full plan:
-[docs/V3_PLAN.md](docs/V3_PLAN.md)). Landed so far:
+[.pipeline/v3-plan.md](.pipeline/v3-plan.md)). Landed so far:
 
 - ✅ **Out-of-time (vintage) validation** — train on earlier originations, test on later
   (`run_partc.py` / `run_finalize.py`). This is *the* credit-risk validation standard and is now
@@ -86,8 +87,8 @@ Also landed:
   time-dependent AUC, integrated Brier).
 - ✅ **ECL backtest** vs realized dollar losses by vintage — the financial engine is calibrated to
   within ~2% in **dollars** (overall predicted/realized ratio 1.02).
-- ✅ **Packaging:** an **SR 11-7-style model card** ([docs/MODEL_CARD.md](docs/MODEL_CARD.md)) and a
-  **results write-up with the money charts** ([docs/RESULTS.md](docs/RESULTS.md) — PD term structure,
+- ✅ **Packaging:** an **SR 11-7-style model card** ([docs/model-card.md](docs/model-card.md)) and a
+  **results write-up with the money charts** ([docs/results.md](docs/results.md) — PD term structure,
   calibration-by-vintage, out-of-time performance, ECL backtest).
 
 Remaining:
@@ -139,10 +140,9 @@ modeling/
 app/
   app.py                   Streamlit Win98 underwriting terminal (PD/LGD/EAD/EL, toggle, SHAP, financials)
 docs/
-  V3_PLAN.md               v3 roadmap (time-aware hazard, OOT validation, packaging)
   macro-decision.md        Why macro is used in TTC-anchored form (the out-of-time study write-up)
-  MODEL_CARD.md            SR 11-7-style model card (intended use, data, metrics, limitations, bias)
-  RESULTS.md               Results write-up with the four money charts (points back from README)
+  model-card.md            SR 11-7-style model card (intended use, data, metrics, limitations, bias)
+  results.md               Results write-up with the four money charts (points back from README)
   finetuning_matrix.png    The v1->v4 challenger chart (tracked deliverable)
   pd_term_structure.png    Cumulative default curves by risk tier (results_charts.py)
   calibration_by_vintage.png  Predicted vs actual PD by origination year (results_charts.py)

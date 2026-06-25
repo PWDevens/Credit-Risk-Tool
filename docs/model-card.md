@@ -1,7 +1,7 @@
 # Model Card — Credit Risk Scorecard (PD / LGD / EAD → Expected Loss)
 
 *SR 11-7-style documentation for the v3 model. Companion to the results write-up
-([`RESULTS.md`](RESULTS.md)) and the v3 plan ([`V3_PLAN.md`](V3_PLAN.md)).*
+([`results.md`](results.md)); the v3 roadmap is maintained internally.*
 
 ---
 
@@ -67,7 +67,7 @@ monthly hazard. It feeds the **PD term structure** used by the lifetime ECL in
   search, discrimination converged at **~0.745–0.750** — the ceiling is **information-bound**, not
   model-bound, on public Prosper data.
 - **PD calibration.** Weighted mean |predicted − actual| ≈ **0.017** across deciles
-  (`calibration_decile.csv`); by-vintage in `calibration_vintage.csv` (see [`RESULTS.md`](RESULTS.md)).
+  (`calibration_decile.csv`); by-vintage in `calibration_vintage.csv` (see [`results.md`](results.md)).
 - **Hazard survival metrics** (`hazard_survival_metrics.csv`). Discrete-time hazard **IPCW
   concordance 0.6637** vs scikit-survival RandomSurvivalForest **0.6996** (RSF time-dependent AUC
   **0.7069**, integrated Brier **0.00275**). The production hazard trades a little discrimination for
@@ -108,8 +108,8 @@ now the limitation is acknowledged rather than corrected.
 
 - **Variable treatment authority:** [`../DATA_DICTIONARY.md`](../DATA_DICTIONARY.md).
 - **Executable feature manifest:** `data/features.py` (wins where it disagrees with the dictionary).
-- **Roadmap & decisions:** [`V3_PLAN.md`](V3_PLAN.md), [`macro-decision.md`](macro-decision.md).
+- **Roadmap & decisions:** [`macro-decision.md`](macro-decision.md) (the v3 roadmap is maintained internally).
 - **Regenerate metrics & charts:** `modeling/calibration_report.py` (calibration tables),
   `modeling/ecl_backtest.py` (dollar backtest), `modeling/survival/benchmark_sksurv.py` (survival
   metrics), `modeling/run_version.py` + `modeling/results_visual.py` (OOT matrix), then
-  `modeling/results_charts.py` (the write-up's money charts). See [`RESULTS.md`](RESULTS.md).
+  `modeling/results_charts.py` (the write-up's money charts). See [`results.md`](results.md).
