@@ -66,8 +66,8 @@ in [`docs/`](docs/README.md).
 
 **v1 (Steps A–E) is complete**: a locally-run Win98 dashboard scoring PD/LGD/EAD/EL, with a
 working AutoML-vs-XGBoost PD toggle and per-borrower SHAP. XGBoost is the shipped challenger —
-it was best-or-tied across the cumulative feature-set matrix against LightGBM and Random Forest
-(all kept as `finetune_*.py` due-diligence scripts).
+best-or-tied at the final (v4) feature set against LightGBM and Random Forest (all kept as
+`finetune_*.py` due-diligence scripts).
 
 **v2 — complete.** A financial engine (`modeling/common/finance.py`) turns PD/LGD/EAD into
 lender decisions: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based
@@ -105,13 +105,13 @@ two-stage LGD model, CCAR/IFRS-9 stress scenarios, and ECOA adverse-action reaso
 ```
 data/
   loader.py                Pull raw data from Kaggle (via kagglehub)
-  features.py              Authoritative manifest: treatment, population, derived + engineered
-                           features, RiskCluster, macro/state joins, PD/EAD/LGD labels
-  data_cleaning.py         Imputation pipeline (manifest-driven)
-  data_processor.py        Train/test split (stratified on the binary target)
-  data_analysis.py         EDA toolkit (missing report, WOE/IV ranking, target-rate views)
+  features.py              Authoritative manifest + live data-build entrypoint: treatment, population,
+                           derived + engineered features, RiskCluster, macro/state joins, PD/EAD/LGD
+                           labels, and the out-of-time train/test split
+  data_analysis.py         Standalone EDA toolkit (missing report, WOE/IV ranking, target-rate views)
   build_macro_features.py  Pull + TTC-smooth NATIONAL macro (FRED unemployment + fed funds)
   build_state_features.py  Pull + TTC-smooth PER-STATE unemployment (future regional overlay)
+  build_loan_month_panel.py  Person-period loan-month panel for the discrete-time hazard model
   raw/                     Raw dataset + macro panels (gitignored; macro_monthly.csv tracked)
   processed/               Train/test splits (gitignored)
 modeling/
@@ -194,13 +194,16 @@ production-grade baseline raise it (env vars; the example uses bash syntax):
 AUTOML_TIME_LIMIT=600 AUTOML_PRESET=best_quality python modeling/train_baselines.py
 ```
 
-To enable the fine-tuned PD toggle and the data-built default-timing curve (optional — the
-app falls back to the AutoML PD and a built-in timing curve without them):
+To enable the fine-tuned PD toggle and the hazard-driven lifetime ECL (all optional — without the
+fine-tuned model the app uses the AutoML PD, and without the hazard model it falls back to the
+empirical default-timing curve):
 
 ```bash
 python modeling/build_risk_clusters.py                        # RiskCluster segmentation (train-only)
 python modeling/probability-of-default/finetune_xgboost.py    # fine-tuned PD (XGBoost) + SHAP
-python modeling/build_default_timing.py                       # default-timing curve for pricing
+python modeling/build_default_timing.py                       # empirical default-timing fallback
+python data/build_loan_month_panel.py                         # loan-month panel for the hazard model
+python modeling/survival/hazard_xgboost.py                    # discrete-time hazard PD term structure
 ```
 
 ### 4. Run the app
@@ -225,19 +228,22 @@ streamlit run app/app.py
 - **EAD.** Installment loans have no undrawn commitment (no CCF); the label is outstanding
   principal at default, `LoanOriginalAmount − LP_CustomerPrincipalPayments`. Lazy baseline
   assumes full exposure.
-- **LGD.** Label = `1 − net recoveries / EAD` (`LP_NetPrincipalLoss / EAD`), clipped to
+- **LGD.** Label = net principal loss / EAD (`LP_NetPrincipalLoss / EAD`), clipped to
   [0, 1]; expected bimodal, so a two-stage cure/severity approach is on the table.
   PV-discounted recoveries and a Basel **downturn-LGD** view are noted refinements.
   Validated on calibration / predicted-vs-actual loss, not AUC.
-- **Imputation highlights.** Credit-bureau numerics → median; `DebtToIncomeRatio` →
-  group-median by `IncomeRange` (cap `10.01` flagged, not treated as a value); prior-Prosper
-  fields → fill 0 + `is_repeat_borrower` (informative nulls, never median).
+- **Missing-value handling.** `features.py` fills *informative* nulls deliberately — prior-Prosper
+  fields → 0 with an `is_repeat_borrower` flag, ratio denominators guarded, engineered features → a
+  `-1.0` sentinel — and flags the `DebtToIncomeRatio` `10.01` cap rather than treating it as a value.
+  Any remaining missing values are handled by the learners natively (AutoGluon imputes internally;
+  XGBoost splits on NaN).
 - **Fine-tuned PD.** XGBoost, FLAML-tuned and isotonic-calibrated, chosen after a like-for-like
-  comparison with LightGBM and Random Forest (all on the same split/features). It was **best or
-  tied in every version of the cumulative matrix** and tops it at v4 (0.7612), edging the AutoML
-  baseline (0.750) once the macro overlay is in. Shipped on the base + engineered + RiskCluster +
-  TTC-macro feature set (see the macro bullet below), with per-borrower SHAP for the "Why?" panel.
-  EAD/LGD stay on the AutoML baseline under both toggle states.
+  comparison with LightGBM and Random Forest (all on the same split/features). It is **best or tied
+  at the shipped (v4) feature set** — test AUC **0.7612**, tied with LightGBM and edging the AutoML
+  baseline (0.750) once the macro overlay is in — and best in three of the four cumulative-matrix
+  steps (LightGBM edges it only at the cluster-only v2). Shipped on the base + engineered +
+  RiskCluster + TTC-macro feature set (see the macro bullet below), with per-borrower SHAP for the
+  "Why?" panel. EAD/LGD stay on the AutoML baseline under both toggle states.
 - **Macro overlay (TTC-anchored).** Unemployment + fed funds at origination are added as a
   *through-the-cycle*–anchored feature (smoothed and shrunk toward a long-run mean), not the
   raw point-in-time level. We tested this hard: raw macro lifts AUC ~+0.015 on a random split
@@ -258,7 +264,7 @@ streamlit run app/app.py
   PD model, surfaced in the app's "Why?" panel. `BorrowerState`/`Occupation` can proxy
   protected class — handled with care and documented in the model card.
 
-### Financial engine (v2)
+### Financial engine
 
 The app turns PD/LGD/EAD into lender decisions via `modeling/common/finance.py`: a discounted
 **lifetime ECL** (PD term-structure × amortizing EAD × discounting at the loan's rate),
