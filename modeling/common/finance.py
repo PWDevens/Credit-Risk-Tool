@@ -133,25 +133,37 @@ def amortization(amount: float, annual_rate: float, term: int):
     return np.asarray(start), np.asarray(interest), np.asarray(principal), float(payment)
 
 
-def project(amount, annual_rate, term, pd_life, lgd, assum=None, timing=None) -> dict:
+def project(amount, annual_rate, term, pd_life, lgd, assum=None, timing=None, marg_pd=None) -> dict:
     """Run the full month-by-month projection for ONE loan at ONE offered interest rate.
 
     Inputs: loan amount, the APR we'd charge, the term in months, the model's lifetime PD and
     LGD, and our business assumptions. Output: lifetime ECL (#3), expected profit + RAROC (#2),
     and a few supporting figures. Use this to evaluate a specific loan at a specific price.
+
+    `marg_pd` (optional): a per-month marginal-default-probability vector from the hazard model
+    (modeling/survival/term_structure.py) — a borrower-specific term structure. When given, it is
+    used directly and `pd_life`/`timing` are ignored. When omitted, we fall back to splitting the
+    single lifetime PD across the months with the empirical timing curve (the v2 behavior).
     """
     assum = assum or EconomicAssumptions()
-    density, bins = timing if timing is not None else load_timing()
     term = int(term)
 
     # Payment table: how much is owed each month, and how each payment splits.
     bal_start, interest, _principal, payment = amortization(amount, annual_rate, term)
-    # How the one lifetime default chance is split across the months (adds to 1).
-    w = timing_weights(term, density, bins)
 
     # marg_pd[t] = chance this loan defaults specifically in month t.
-    # (lifetime chance of EVER defaulting, times the share of that risk landing in month t.)
-    marg_pd = pd_life * w
+    if marg_pd is not None:
+        # Model term structure (from term_structure.marginal_pd): it already encodes both
+        # how-likely and when, so pd_life isn't needed. Defensively conform it to `term` — normally
+        # a no-op, since the hazard curve is built at this exact term. Be explicit about the two
+        # mismatch cases: truncating drops tail-month default mass; zero-padding assumes no default
+        # risk past the supplied curve. Either only bites if a caller passes a wrong-length vector.
+        m = np.asarray(marg_pd, dtype=float)
+        marg_pd = m[:term] if m.size >= term else np.concatenate([m, np.zeros(term - m.size)])
+    else:
+        # Empirical fallback: one lifetime PD spread across the months by the timing curve (adds to 1).
+        density, bins = timing if timing is not None else load_timing()
+        marg_pd = pd_life * timing_weights(term, density, bins)
     # surv_start[t] = chance the loan is still alive (hasn't defaulted) at the start of month t.
     # It starts near 1 and drops as the cumulative chance of having defaulted builds up.
     surv_start = 1.0 - np.concatenate([[0.0], np.cumsum(marg_pd)[:-1]])
@@ -193,23 +205,24 @@ def project(amount, annual_rate, term, pd_life, lgd, assum=None, timing=None) ->
     }
 
 
-def _solve_rate(target_profit, amount, term, pd_life, lgd, assum, timing, lo=0.0, hi=0.60):
+def _solve_rate(target_profit, amount, term, pd_life, lgd, assum, timing, lo=0.0, hi=0.60,
+                marg_pd=None):
     """Find the interest rate that produces a given profit, by guess-and-narrow (bisection).
 
-    Charging more always earns more profit (the borrower's risk PD/LGD doesn't change with the
-    price we quote — that's why we can solve for price cleanly). So we repeatedly try the
-    midpoint of a rate range and shrink the range toward the answer. 60 rounds is plenty
+    Charging more always earns more profit (the borrower's risk PD/LGD/term-structure doesn't
+    change with the price we quote — that's why we can solve for price cleanly). So we repeatedly
+    try the midpoint of a rate range and shrink the range toward the answer. 60 rounds is plenty
     precise. Searches between 0% and 60% APR; if even 60% isn't enough, it returns ~60%.
     """
     for _ in range(60):
         mid = (lo + hi) / 2.0
-        p = project(amount, mid, term, pd_life, lgd, assum, timing)["expected_profit"]
+        p = project(amount, mid, term, pd_life, lgd, assum, timing, marg_pd)["expected_profit"]
         # If this rate makes too little profit, the answer is higher; otherwise it's lower.
         lo, hi = (mid, hi) if p < target_profit else (lo, mid)
     return (lo + hi) / 2.0
 
 
-def price(amount, term, pd_life, lgd, assum=None, timing=None) -> dict:
+def price(amount, term, pd_life, lgd, assum=None, timing=None, marg_pd=None) -> dict:
     """#1 RISK-BASED PRICE: what interest rate should we charge for this risk?
 
     Returns two rates:
@@ -225,10 +238,10 @@ def price(amount, term, pd_life, lgd, assum=None, timing=None) -> dict:
     capital = assum.capital_ratio * amount
     years = term / 12.0
     # Break-even = the rate where expected profit is exactly $0.
-    breakeven = _solve_rate(0.0, amount, term, pd_life, lgd, assum, timing)
+    breakeven = _solve_rate(0.0, amount, term, pd_life, lgd, assum, timing, marg_pd=marg_pd)
     # Target = the rate where profit equals (target yearly return) x (cushion) x (years), i.e.
     # where the annual RAROC equals our hurdle.
     target = _solve_rate(assum.target_raroc * capital * years,
-                         amount, term, pd_life, lgd, assum, timing)
+                         amount, term, pd_life, lgd, assum, timing, marg_pd=marg_pd)
     return {"breakeven_apr": breakeven, "target_raroc_apr": target,
             "target_raroc": assum.target_raroc}

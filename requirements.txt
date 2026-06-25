@@ -2,7 +2,7 @@ python-dotenv
 kagglehub
 numpy
 pandas
-scikit-learn
+scikit-learn>=1.6,<1.8   # >=1.6 for FrozenEstimator (Phase 2 hazard calibration); <1.8 for AutoGluon
 scipy
 AutoGluon
 xgboost
@@ -10,3 +10,5 @@ flaml
 shap
 streamlit
 matplotlib
+pyarrow              # parquet cache for the loan-month panel (Phase 2)
+scikit-survival>=0.24,<0.27   # optional: continuous-time survival benchmark + metrics (Phase 2); <0.27 keeps scikit-learn <1.8
