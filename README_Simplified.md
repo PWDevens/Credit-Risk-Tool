@@ -129,7 +129,7 @@ to new loans.
 Our fix was to **smooth** the unemployment number — flatten out the sharp spikes and nudge it
 toward its long-run normal. The smoothed version can't be used as a date stamp, so it holds up
 better on the honest out-of-time test. The full story is in
-[docs/macro-decision.md](docs/macro-decision.md), also written in plain terms.
+[docs/01-feature-engineering.md](docs/01-feature-engineering.md), also written in plain terms.
 
 ---
 

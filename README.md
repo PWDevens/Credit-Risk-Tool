@@ -31,8 +31,8 @@ profit / RAROC, and a recommended APR.
   (break-even and target-return APR).
 - **v3 — making it defensible** (in progress). A measured **feature-engineering** pass, a
   point-in-time **macro overlay** kept in *through-the-cycle (TTC)–anchored* form, and
-  **out-of-time (vintage) validation** — the way credit models are actually judged. Decision
-  record: [`docs/macro-decision.md`](docs/macro-decision.md); the v3 build plan lives in
+  **out-of-time (vintage) validation** — the way credit models are actually judged. Topic write-ups
+  are indexed in [`docs/`](docs/README.md); the v3 build plan lives in
   [`.pipeline/v3-plan.md`](.pipeline/v3-plan.md).
 
 See [Project status](#project-status) for the per-step breakdown.
@@ -78,7 +78,7 @@ pricing** (break-even and target-return APR), surfaced in the app's "Financials"
   in — the ~0.75 AUC ceiling is information-bound, not model-bound.
 - ✅ **Point-in-time macro overlay** — national unemployment + fed funds at origination, kept in
   **through-the-cycle (TTC)–anchored** form after the out-of-time study showed raw macro is partly
-  a vintage proxy ([docs/macro-decision.md](docs/macro-decision.md)).
+  a vintage proxy ([docs/01-feature-engineering.md](docs/01-feature-engineering.md)).
 
 Also landed:
 
@@ -87,9 +87,9 @@ Also landed:
   time-dependent AUC, integrated Brier).
 - ✅ **ECL backtest** vs realized dollar losses by vintage — the financial engine is calibrated to
   within ~2% in **dollars** (overall predicted/realized ratio 1.02).
-- ✅ **Packaging:** an **SR 11-7-style model card** ([docs/model-card.md](docs/model-card.md)) and a
-  **results write-up with the money charts** ([docs/results.md](docs/results.md) — PD term structure,
-  calibration-by-vintage, out-of-time performance, ECL backtest).
+- ✅ **Packaging:** topic write-ups for each piece of the work — feature engineering, PD finetuning,
+  validation, the hazard model, ECL backtesting — plus an **SR 11-7-style model card**, all indexed in
+  [docs/](docs/README.md).
 
 Remaining:
 
@@ -140,13 +140,14 @@ modeling/
 app/
   app.py                   Streamlit Win98 underwriting terminal (PD/LGD/EAD/EL, toggle, SHAP, financials)
 docs/
-  macro-decision.md        Why macro is used in TTC-anchored form (the out-of-time study write-up)
-  model-card.md            SR 11-7-style model card (intended use, data, metrics, limitations, bias)
-  results.md               Results write-up with the four money charts (points back from README)
-  finetuning_matrix.png    The v1->v4 challenger chart (tracked deliverable)
-  pd_term_structure.png    Cumulative default curves by risk tier (results_charts.py)
-  calibration_by_vintage.png  Predicted vs actual PD by origination year (results_charts.py)
-  ecl_backtest.png         Predicted vs realized $ loss by vintage (committed copy; results_charts.py)
+  README.md                Index of the topic write-ups (start here)
+  01-feature-engineering.md       Feature selection/engineering + leakage-safe TTC macro overlay
+  02-pd-model-finetuning.md       AutoML baseline, tree challengers, calibration, the AUC ceiling
+  03-validation-methodology.md    Out-of-time splits + decile/by-vintage calibration
+  04-discrete-time-hazard-model.md  Loan-month panel, monthly hazard, PD term structure
+  05-ecl-backtesting.md           Predicted vs realized $ loss by vintage
+  06-model-card.md                SR 11-7-style model card (intended use, data, metrics, limits)
+  *.png                    The four committed money charts (one per relevant doc above)
 models/                    Serialized artifacts (gitignored): risk_cluster.joblib,
                            feature_defaults.json, default_timing.json; pd_*.joblib live beside
                            the PD scripts, AutoGluon dirs as modeling/<metric>/automl_model/
@@ -244,7 +245,7 @@ streamlit run app/app.py
   ~+0.025) and rescues the logistic model from overfitting. Macro shifts the **PD level** with
   the economy (it's a cycle calibration for EL/reserves/pricing), not the applicant ranking.
   Full plain-language write-up + the random-vs-out-of-time results table:
-  [docs/macro-decision.md](docs/macro-decision.md).
+  [docs/01-feature-engineering.md](docs/01-feature-engineering.md).
 - **Recommended next overlay — regional (state) unemployment.** The national macro only varies
   by date, so on a random split it partly acts as a vintage proxy. The borrower's *own state's*
   unemployment at origination is **cross-sectional** (it differs between borrowers on the same

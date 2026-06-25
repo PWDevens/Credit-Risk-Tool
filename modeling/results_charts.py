@@ -1,6 +1,6 @@
 """Phase 4 — build the results write-up's money charts into docs/ (committed PNGs).
 
-The results write-up (docs/results.md) renders on GitHub, so every embedded chart must be a
+The results write-ups (docs/) render on GitHub, so every embedded chart must be a
 committed file under docs/ (model-results/ is gitignored). This script builds the two charts that
 had no committed PNG yet — PD term structure and calibration-by-vintage — plus a committed copy of
 the ECL backtest chart. The out-of-time matrix (docs/finetuning_matrix.png) already exists and is

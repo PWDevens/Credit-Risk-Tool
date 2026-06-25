@@ -1,7 +1,15 @@
 # Model Card — Credit Risk Scorecard (PD / LGD / EAD → Expected Loss)
 
-*SR 11-7-style documentation for the v3 model. Companion to the results write-up
-([`results.md`](results.md)); the v3 roadmap is maintained internally.*
+*SR 11-7-style documentation for the v3 model. The companion topic docs are listed in
+[`README.md`](README.md); the v3 roadmap is maintained internally.*
+
+> **Why a model card, and why SR 11-7?** SR 11-7 is the U.S. supervisory guidance on *model risk
+> management* — the expectation that a model used for real decisions is documented, validated, and
+> governed, with its intended use, data, metrics, limitations, and fair-lending posture stated plainly
+> so a reviewer (or a future maintainer) can judge whether it's fit for purpose. A credit model that
+> sets reserves and prices loans is squarely in scope. This card is that record: it makes the model's
+> assumptions and known weaknesses explicit rather than leaving them implicit in the code, which is
+> the difference between a model that can be *defended* and one that merely *runs*.
 
 ---
 
@@ -50,7 +58,7 @@ monthly hazard. It feeds the **PD term structure** used by the lifetime ECL in
   observations (exposure up to the snapshot), restoring that information honestly.
 - **Macro overlay.** National unemployment + fed funds joined **point-in-time at origination**, kept
   in **through-the-cycle (TTC)-anchored** form after the out-of-time study showed raw macro is partly
-  a vintage proxy ([`macro-decision.md`](macro-decision.md)).
+  a vintage proxy ([`01-feature-engineering.md`](01-feature-engineering.md)).
 - **Train/test split.** **Out-of-time (vintage)** at `data.OOT_CUTOFF = 2013-01-01` — train on
   originations before the cutoff, test on/after — the way credit models are actually validated.
 - **Feature governance.** Only fields knowable at the underwriting decision are inputs. Outcome
@@ -67,7 +75,8 @@ monthly hazard. It feeds the **PD term structure** used by the lifetime ECL in
   search, discrimination converged at **~0.745–0.750** — the ceiling is **information-bound**, not
   model-bound, on public Prosper data.
 - **PD calibration.** Weighted mean |predicted − actual| ≈ **0.017** across deciles
-  (`calibration_decile.csv`); by-vintage in `calibration_vintage.csv` (see [`results.md`](results.md)).
+  (`calibration_decile.csv`); by-vintage in `calibration_vintage.csv` (see
+  [`03-validation-methodology.md`](03-validation-methodology.md)).
 - **Hazard survival metrics** (`hazard_survival_metrics.csv`). Discrete-time hazard **IPCW
   concordance 0.6637** vs scikit-survival RandomSurvivalForest **0.6996** (RSF time-dependent AUC
   **0.7069**, integrated Brier **0.00275**). The production hazard trades a little discrimination for
@@ -108,8 +117,10 @@ now the limitation is acknowledged rather than corrected.
 
 - **Variable treatment authority:** [`../DATA_DICTIONARY.md`](../DATA_DICTIONARY.md).
 - **Executable feature manifest:** `data/features.py` (wins where it disagrees with the dictionary).
-- **Roadmap & decisions:** [`macro-decision.md`](macro-decision.md) (the v3 roadmap is maintained internally).
+- **Decisions:** [`01-feature-engineering.md`](01-feature-engineering.md) (feature + macro rationale);
+  the v3 roadmap is maintained internally.
 - **Regenerate metrics & charts:** `modeling/calibration_report.py` (calibration tables),
   `modeling/ecl_backtest.py` (dollar backtest), `modeling/survival/benchmark_sksurv.py` (survival
   metrics), `modeling/run_version.py` + `modeling/results_visual.py` (OOT matrix), then
-  `modeling/results_charts.py` (the write-up's money charts). See [`results.md`](results.md).
+  `modeling/results_charts.py` (the money charts). The full topic set is indexed in
+  [`README.md`](README.md).

@@ -75,7 +75,7 @@ def main() -> None:
         ax.annotate(
             "v4's macro gain is a random-split number.\n"
             "Out-of-time (Part C): ~half is a vintage proxy\n"
-            "that fades on unseen vintages — see docs/macro-decision.md",
+            "that fades on unseen vintages — see docs/01-feature-engineering.md",
             xy=(3, 0.760), xytext=(0.35, 0.672), fontsize=7.5, color="#5A3A00",
             bbox=dict(boxstyle="round,pad=0.35", fc="#FFF3D6", ec="#C8A24B", lw=1),
             arrowprops=dict(arrowstyle="->", color="#C8A24B", lw=1.4,
