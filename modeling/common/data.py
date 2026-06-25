@@ -39,9 +39,13 @@ def _feature_cols(include_engineered: bool = False, include_cluster: bool = Fals
     if include_cluster:
         cols += ["RiskCluster"]
     if macro_set == "raw":
-        cols += F.MACRO_FEATURES
-    elif macro_set == "ttc":
+        cols += F.MACRO_FEATURES_RAW
+    elif macro_set == "ttc":                 # canonical national (== F.MACRO_FEATURES)
         cols += F.MACRO_FEATURES_TTC
+    elif macro_set == "ttc_geo":             # national + regional (state) TTC overlay
+        cols += F.MACRO_FEATURES_TTC + F.STATE_FEATURES_TTC
+    elif macro_set == "state":               # state overlay only (to isolate its marginal value)
+        cols += F.STATE_FEATURES_TTC
     elif macro_set == "robust":
         cols += F.MACRO_FEATURES_ROBUST
     return cols
@@ -49,8 +53,8 @@ def _feature_cols(include_engineered: bool = False, include_cluster: bool = Fals
 
 def pd_Xy(df: pd.DataFrame, include_engineered: bool = False, include_cluster: bool = False,
           include_macro: bool = False):
-    """Backward-compatible: include_macro=True maps to the raw macro set."""
-    cols = _feature_cols(include_engineered, include_cluster, "raw" if include_macro else None)
+    """include_macro=True maps to the canonical (TTC-anchored) macro set."""
+    cols = _feature_cols(include_engineered, include_cluster, "ttc" if include_macro else None)
     return df[cols].copy(), df[F.PD_TARGET].astype(int)
 
 

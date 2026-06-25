@@ -2,12 +2,14 @@
 IV/WOE + best-model explainability drivers. Reports everything for that version, then exits
 (the caller runs v1..v5 in sequence and reports after each).
 
-Versions:
+Versions (CUMULATIVE / nested ablation — each adds a layer on top of the previous):
   v1_base        base features only
   v2_cluster     base + RiskCluster
-  v3_macro       base + macro overlay
-  v4_engineered  base + engineered features
-  v5_all         base + cluster + macro + engineered
+  v3_engineered  base + cluster + engineered features
+  v4_macro       base + cluster + engineered + macro (national TTC; state overlay = future ver.)
+
+Each bar answers "what does THIS layer add on top of everything before it." Macro is last,
+the most honest test of it: does the economy add signal beyond the borrower's own data?
 
 Constant references (not re-run): AutoML 0.750, Prosper grade champion 0.648.
 
@@ -38,13 +40,12 @@ import finetune_lightgbm as lgbm  # noqa: E402
 import finetune_rf as rf  # noqa: E402
 import finetune_logistic as logit  # noqa: E402
 
-# version -> (include_engineered, include_cluster, include_macro)
+# version -> (include_engineered, include_cluster, macro_set)  [cumulative: each adds a layer]
 VERSIONS = {
-    "v1_base": (False, False, False),
-    "v2_cluster": (False, True, False),
-    "v3_macro": (False, False, True),
-    "v4_engineered": (True, False, False),
-    "v5_all": (True, True, True),
+    "v1_base": (False, False, None),
+    "v2_cluster": (False, True, None),
+    "v3_engineered": (True, True, None),
+    "v4_macro": (True, True, "ttc"),         # national TTC macro (state overlay = future version)
 }
 MODELS = [
     ("xgboost", xgb.build, xgb.SEARCH_SPACE, xgb.SEED, xgb.INT_KEYS, False),
@@ -79,7 +80,7 @@ def _drivers(name: str, r: dict, top: int = 12):
 def main(version: str) -> None:
     if version not in VERSIONS:
         raise SystemExit(f"unknown version {version!r}; choices: {list(VERSIONS)}")
-    eng, clu, mac = VERSIONS[version]
+    eng, clu, mac = VERSIONS[version]        # mac is a macro_set string or None
     budget = int(os.environ.get("FLAML_TIME_BUDGET", "180"))
     print(f"\n############### {version}  "
           f"(engineered={eng}, cluster={clu}, macro={mac}, budget={budget}s) ###############")
@@ -96,7 +97,7 @@ def main(version: str) -> None:
     for mname, build, space, seed, int_keys, scale in MODELS:
         print(f"\n--- {version} x {mname}: tuning ({budget}s) ---", flush=True)
         r = _train_one(build, space, seed, int_keys, include_engineered=eng,
-                       include_cluster=clu, include_macro=mac, scale_numeric=scale, budget=budget)
+                       include_cluster=clu, macro_set=mac, scale_numeric=scale, budget=budget)
         mc = M.pd_metrics(r["yte"], r["cal_prob"])
         row = {"version": version, "model": mname, "cv_auc": round(r["cv_auc"], 4),
                "test_auc_cal": round(mc["AUC"], 4), "gini": round(mc["Gini"], 4),

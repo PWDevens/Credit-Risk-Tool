@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "modeling" / "model-results"
 OUT = REPO_ROOT / "docs" / "finetuning_matrix.png"
 
-VERSIONS = ["v1_base", "v2_cluster", "v3_macro", "v4_engineered", "v5_all"]
-VLABELS = ["v1\nbase", "v2\n+cluster", "v3\n+macro", "v4\n+engineered", "v5\n+all"]
+VERSIONS = ["v1_base", "v2_cluster", "v3_engineered", "v4_macro"]
+VLABELS = ["v1\nbase", "v2\n+cluster", "v3\n+engineered", "v4\n+macro"]
 MODELS = ["lightgbm", "xgboost", "rf", "logistic"]
 STYLE = {  # color + marker so series are distinguishable without relying on color alone
     "lightgbm": ("#1D9E75", "o"), "xgboost": ("#534AB7", "^"),
@@ -64,7 +64,7 @@ def main() -> None:
     ax.set_xticklabels(VLABELS)
     ax.set_ylabel("calibrated test AUC")
     ax.set_xlabel("feature-set version")
-    ax.set_title("PD challengers across feature-set versions (v1–v5)")
+    ax.set_title("PD challengers across cumulative feature-set versions (v1–v4)")
     ax.grid(alpha=0.3)
     ax.legend(loc="center right", fontsize=9)
     fig.tight_layout()

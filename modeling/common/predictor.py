@@ -50,15 +50,21 @@ class RiskPredictor:
         # Persisted KMeans pipeline (impute->quantile-scale->cluster) for RiskCluster; the
         # SAME object fit on train is applied here in production (no re-fit, no leakage).
         self.risk_cluster = joblib.load(F.RISK_CLUSTER_PATH) if F.RISK_CLUSTER_PATH.exists() else None
+        # Latest TTC-anchored macro (a new loan is originated 'now'); a through-the-cycle
+        # calibration that shifts the PD level with the economy. Cached once.
+        self.macro = F.current_macro()
         self.defaults = json.loads(DEFAULTS_PATH.read_text())
         self._explainer = None
 
     def _engineer(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Add the engineered features + the RiskCluster label to a scoring row, exactly as
-        the fine-tuned model saw them in training (feature_engineering then assign_risk_cluster)."""
+        """Reproduce, for a scoring row, exactly what the fine-tuned model saw in training:
+        engineered features, the RiskCluster label, and the (TTC-anchored) macro overlay at
+        today's conditions. Columns the model wasn't trained on are dropped by the preprocessor."""
         Xfe = F.feature_engineering(X)
         if self.risk_cluster is not None:
             Xfe["RiskCluster"] = F.assign_risk_cluster(Xfe, self.risk_cluster)
+        for col, val in self.macro.items():
+            Xfe[col] = val
         return Xfe
 
     def _row(self, inputs: dict) -> pd.DataFrame:

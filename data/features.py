@@ -30,29 +30,36 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_CSV = REPO_ROOT / "data" / "raw" / "prosperLoanData.csv"
 PROCESSED_DIR = REPO_ROOT / "data" / "processed"
 
-# Macro overlay (point-in-time unemployment + fed funds at origination). Pulled by
-# build_macro_features.py; the pipeline joins it only if this file exists (graceful no-op
-# otherwise), so the repo runs fine before the data is fetched.
+# Macro overlay (economic conditions at origination), pulled by build_macro_features.py; the
+# pipeline joins it only if the file exists (graceful no-op otherwise).
 MACRO_CSV = REPO_ROOT / "data" / "raw" / "macro_monthly.csv"
-MACRO_FEATURES = ["macro_unemployment", "macro_fedfunds"]
 
-# --- Through-the-cycle (TTC) anchoring config (see .pipeline/time-smoothing.md) -------------
+# --- Through-the-cycle (TTC) anchoring (see docs/macro-decision.md, .pipeline/time-smoothing.md)
 # Raw point-in-time unemployment is spiky (2009 GFC, 2020 COVID) and correlates with vintage,
 # so on a random split it inflates AUC by letting the model memorize cohort default rates.
-# TTC anchoring smooths it (EWMA) and shrinks it toward a long-run mean, trading a little
-# random-split AUC for robustness through downturns + better out-of-time generalization.
-# build_macro_features.py produces the *_ma12 / *_ewma / *_ttc / *_gap columns.
+# TTC anchoring smooths it (EWMA) and shrinks toward a long-run mean. build_macro_features.py
+# produces the *_ma12 / *_ewma / *_ttc / *_gap / *_yoy columns.
 TTC_WEIGHT = 0.5                                # macro_ttc = w*smoothed_PIT + (1-w)*long_run_mean
 MACRO_LONGRUN_WINDOW = ("1990-01", "2019-12")   # stable anchor window (excludes the COVID spike)
-# Robust macro set: TTC-anchored levels + the unemployment cyclical gap. To ACTIVATE, set
-# MACRO_FEATURES = MACRO_FEATURES_TTC and regenerate (build_macro_features -> features ->
-# build_risk_clusters). Kept separate so the raw-macro matrix (v3 and v5) stays consistent.
+
+MACRO_FEATURES_RAW = ["macro_unemployment", "macro_fedfunds"]                  # point-in-time level
 MACRO_FEATURES_TTC = ["macro_unemployment_ttc", "macro_fedfunds_ttc", "macro_unemployment_gap"]
-# Robust set for generalization: cyclical GAP + trailing year-over-year CHANGE (point-in-time
-# clean, more stationary than the level -> a better shot at out-of-time generalization than raw
-# macro, which Part C showed is a vintage proxy). Select with macro_set='robust'.
-MACRO_FEATURES_ROBUST = ["macro_unemployment_gap", "macro_unemployment_yoy",
+MACRO_FEATURES_ROBUST = ["macro_unemployment_gap", "macro_unemployment_yoy",   # gap + trailing YoY
                          "macro_fedfunds_gap", "macro_fedfunds_yoy"]
+
+# CANONICAL macro form for this project = TTC-anchored. DECIDED after the v1-v5 feature matrix
+# + the Part C out-of-time study: raw point-in-time macro is partly a vintage proxy that does
+# NOT generalize out-of-time, whereas TTC-anchored macro generalizes best for the GBMs and
+# rescues the logistic model from overfitting the vintage levels. "macro" unqualified = this.
+MACRO_FEATURES = MACRO_FEATURES_TTC
+
+# --- STATE (regional) unemployment overlay (data/build_state_features.py) -------------------
+# The borrower's OWN state's unemployment at origination, TTC-smoothed per state (each state
+# anchored to its own long-run mean). Cross-sectional (varies between borrowers on the same
+# date), so unlike national macro it is not just a vintage proxy. Joined by BorrowerState x ym.
+STATE_CSV = REPO_ROOT / "data" / "raw" / "state_monthly.csv"
+STATE_FEATURES_RAW = ["state_unemployment"]
+STATE_FEATURES_TTC = ["state_unemployment_ttc", "state_unemployment_gap"]   # canonical state set
 
 # --------------------------------------------------------------------------- #
 # Population (DATA_DICTIONARY §1, §11.5, §11.6)                                 #
@@ -524,14 +531,62 @@ def assign_macro_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
     if not MACRO_CSV.exists():
-        for c in MACRO_FEATURES:
+        for c in MACRO_FEATURES_RAW + MACRO_FEATURES_TTC + MACRO_FEATURES_ROBUST:
             out[c] = np.nan
         return out
     macro = pd.read_csv(MACRO_CSV, dtype={"ym": str}).set_index("ym")
     ym = pd.to_datetime(out["LoanOriginationDate"], errors="coerce").dt.to_period("M").astype(str)
-    for c in macro.columns:        # join ALL macro columns (raw + smoothed + ttc + gap)
+    for c in macro.columns:        # join ALL macro columns (raw + smoothed + ttc + gap + yoy)
         out[c] = ym.map(macro[c])
     return out
+
+
+def current_macro(macro_path: Path = MACRO_CSV) -> dict:
+    """Latest available macro values, for scoring a NEW loan at today's economic conditions.
+
+    A new application is originated 'now', so its point-in-time macro is the most recent month
+    in the table. Returns {col: value} for the canonical MACRO_FEATURES (TTC-anchored); empty
+    if no macro file. This is a through-the-cycle calibration: it shifts every current PD with
+    the economy (matters for EL/reserves/pricing) without changing the ranking among same-day
+    applicants (macro is identical for all of them).
+    """
+    if not macro_path.exists():
+        return {}
+    m = pd.read_csv(macro_path, dtype={"ym": str}).sort_values("ym")
+    avail = m.dropna(subset=[c for c in MACRO_FEATURES if c in m.columns])
+    last = (avail if not avail.empty else m).iloc[-1]
+    return {c: float(last[c]) for c in MACRO_FEATURES if c in m.columns}
+
+
+def assign_state_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Join the borrower's STATE unemployment (TTC-smoothed) at origination, by BorrowerState x
+    origination month. No-op (NaN columns) until build_state_features.py has been run."""
+    out = df.copy()
+    state_cols = STATE_FEATURES_RAW + STATE_FEATURES_TTC
+    if not STATE_CSV.exists():
+        for c in state_cols:
+            out[c] = np.nan
+        return out
+    st = pd.read_csv(STATE_CSV, dtype={"ym": str, "state": str})
+    ym = pd.to_datetime(out["LoanOriginationDate"], errors="coerce").dt.to_period("M").astype(str)
+    key = pd.DataFrame({"ym": ym.to_numpy(), "state": out["BorrowerState"].astype("string").to_numpy()})
+    merged = key.merge(st[["ym", "state", *state_cols]], on=["ym", "state"], how="left")
+    for c in state_cols:                       # null BorrowerState (~5%) -> NaN; trees handle it
+        out[c] = merged[c].to_numpy()
+    return out
+
+
+def current_state_features(state: str | None, state_path: Path = STATE_CSV) -> dict:
+    """Latest TTC state values for a given BorrowerState, for scoring a NEW loan. Empty if no
+    state file or unknown state (caller leaves NaN, which the tree models handle)."""
+    if state is None or not state_path.exists():
+        return {}
+    st = pd.read_csv(state_path, dtype={"ym": str, "state": str}).sort_values("ym")
+    sub = st[st["state"] == str(state)].dropna(subset=STATE_FEATURES_TTC)
+    if sub.empty:
+        return {}
+    last = sub.iloc[-1]
+    return {c: float(last[c]) for c in STATE_FEATURES_TTC if c in st.columns}
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -545,10 +600,14 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     if MACRO_CSV.exists():           # only join when the macro data has been fetched
         df = assign_macro_features(df)
         macro_cols = list(dict.fromkeys(
-            MACRO_FEATURES + MACRO_FEATURES_TTC + MACRO_FEATURES_ROBUST))  # raw + TTC + robust
+            MACRO_FEATURES_RAW + MACRO_FEATURES_TTC + MACRO_FEATURES_ROBUST))  # all variants ride along
+    state_cols = []
+    if STATE_CSV.exists():           # regional overlay rides along once fetched
+        df = assign_state_features(df)
+        state_cols = list(dict.fromkeys(STATE_FEATURES_RAW + STATE_FEATURES_TTC))
     # LoanOriginationDate is retained (non-feature) so an out-of-time split can key on vintage.
     keep = list(dict.fromkeys(
-        MODEL_FEATURES + ENGINEERED_FEATURES + macro_cols
+        MODEL_FEATURES + ENGINEERED_FEATURES + macro_cols + state_cols
         + ["LoanOriginationDate"] + LABEL_SUPPORT + BENCHMARK_COLS))
     keep = [c for c in keep if c in df.columns]
     out = df[keep].copy()

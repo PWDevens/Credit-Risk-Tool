@@ -112,7 +112,7 @@ def _train_one(build_estimator, search_space, seed_config, int_keys, *,
     """Tune + refit + isotonic-calibrate on one feature-set. Returns everything needed to
     score or save. split_mode/macro_set drive Part C (random vs OOT, raw vs TTC macro)."""
     if macro_set is None and include_macro:
-        macro_set = "raw"   # backward compat: include_macro=True -> raw point-in-time set
+        macro_set = "ttc"   # include_macro=True -> canonical TTC-anchored macro set
     Xtr, ytr, Xte, yte = D.pd_split(split_mode, include_engineered=include_engineered,
                                     include_cluster=include_cluster, macro_set=macro_set)
     spw = float((ytr == 0).sum() / max((ytr == 1).sum(), 1))
@@ -147,14 +147,16 @@ def evaluate_featureset(name, build_estimator, search_space, seed_config, int_ke
 
 
 def run_finetune(name, build_estimator, search_space, seed_config, int_keys, *,
-                 scale_numeric=False, include_engineered=True, include_cluster=True) -> dict:
-    """Full path for a shipped per-model challenger: tune on the v4 feature-set (default),
-    save pd_<name>.joblib + pd_<name>_best_config.json + pd_finetune_<name>.csv."""
+                 scale_numeric=False, include_engineered=True, include_cluster=True,
+                 include_macro=True) -> dict:
+    """Full path for a shipped per-model challenger: tune on base + engineered + cluster +
+    TTC-anchored macro (the chosen production feature set), save pd_<name>.joblib +
+    pd_<name>_best_config.json + pd_finetune_<name>.csv."""
     budget = int(os.environ.get("FLAML_TIME_BUDGET", "180"))
     print(f"\n=== {name}: FLAML search (budget={budget}s, {CV_FOLDS}-fold CV AUC) ===")
     r = _train_one(build_estimator, search_space, seed_config, int_keys,
                    include_engineered=include_engineered, include_cluster=include_cluster,
-                   scale_numeric=scale_numeric, budget=budget)
+                   include_macro=include_macro, scale_numeric=scale_numeric, budget=budget)
     print(f"[{name}] best CV AUC = {r['cv_auc']:.4f}  config = {json.dumps(r['best'])}")
 
     rows = [
