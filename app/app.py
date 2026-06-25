@@ -5,6 +5,12 @@ resulting Expected Loss (EL = PD x LGD x EAD). It toggles between the AutoML and
 fine-tuned (XGBoost) PD models, explains the PD per-borrower with SHAP, and adds
 risk-based pricing (lifetime ECL, expected profit/RAROC, recommended APR).
 
+The lifetime ECL spreads loss across the loan's months using the v3 discrete-time
+hazard model's borrower-specific PD term structure (modeling/survival/term_structure.py),
+falling back to the empirical timing curve when the hazard artifact is absent. PD itself
+reflects the current through-the-cycle (TTC) macro overlay, surfaced in the "Economic
+context" panel (see docs/01-feature-engineering.md).
+
 Price (the offered APR) is collected only as a financial input/output — it is never
 fed to the risk models, which see origination-time facts only.
 
@@ -223,7 +229,7 @@ def render_explanation(drivers: list) -> None:
     )
 
 
-def render_financials(offered_apr: float, econ: dict, pr: dict) -> None:
+def render_financials(offered_apr: float, econ: dict, pr: dict, hazard_used: bool) -> None:
     """Render lifetime ECL + expected profit/RAROC + risk-based price (Win98 panel)."""
     be, tgt, hurdle = pr["breakeven_apr"], pr["target_raroc_apr"], pr["target_raroc"]
     if offered_apr >= tgt:
@@ -232,13 +238,16 @@ def render_financials(offered_apr: float, econ: dict, pr: dict) -> None:
         cls, verdict = "refer", "⚠ COVERS COST — above break-even but below target return; reprice up"
     else:
         cls, verdict = "decline", "✕ UNPROFITABLE — priced below break-even"
+    # Loss timing: the hazard model's borrower-specific term structure when available, else the
+    # population-average empirical curve. The label tells the user which one produced this ECL.
+    timing = "hazard term-structure" if hazard_used else "empirical timing"
     st.markdown(
         f"""
         <div class="w98-window">
           <div class="w98-titlebar"><span>💵 Financials — lifetime &amp; discounted</span><span class="controls">_ ▢ ✕</span></div>
           <div class="body">
             <div class="metric"><span>Monthly payment @ {offered_apr:.1%} APR</span><b>${econ['monthly_payment']:,.0f}</b></div>
-            <div class="metric"><span>Lifetime ECL&nbsp;&nbsp;(PD term-structure × EAD amort. × disc.)</span><b>${econ['lifetime_ecl']:,.0f}</b></div>
+            <div class="metric"><span>Lifetime ECL&nbsp;&nbsp;({timing} × EAD amort. × disc.)</span><b>${econ['lifetime_ecl']:,.0f}</b></div>
             <div class="metric"><span>Interest income (PV, survival-weighted)</span><b>${econ['interest_income_pv']:,.0f}</b></div>
             <div class="metric"><span>Expected profit / NPV</span><b>${econ['expected_profit']:,.0f}</b></div>
             <div class="metric el"><span>RAROC (annualized)</span><b>{econ['raroc']:.1%}</b></div>
@@ -246,6 +255,38 @@ def render_financials(offered_apr: float, econ: dict, pr: dict) -> None:
             <div class="metric"><span>Recommended APR&nbsp;&nbsp;(@ {hurdle:.0%} RAROC)</span><b>{tgt:.2%}</b></div>
             <div class="verdict {cls}">{verdict}</div>
           </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_economic_context(macro: dict) -> None:
+    """Show the TTC-anchored macro overlay currently feeding the PD model (Win98 panel)."""
+    if not macro:
+        body = ("No macro overlay loaded — PD reflects borrower facts only. Add "
+                "<code>data/raw/macro_monthly.csv</code> to enable the economic overlay.")
+    else:
+        ue, ff = macro.get("macro_unemployment_ttc"), macro.get("macro_fedfunds_ttc")
+        gap = macro.get("macro_unemployment_gap")
+        rows = ""
+        if ue is not None:
+            rows += f'<div class="metric"><span>Unemployment (TTC-anchored)</span><b>{ue:.1f}%</b></div>'
+        if ff is not None:
+            rows += f'<div class="metric"><span>Fed funds (TTC-anchored)</span><b>{ff:.1f}%</b></div>'
+        if gap is not None:
+            rows += f'<div class="metric"><span>Unemployment gap vs normal</span><b>{gap:+.1f} pts</b></div>'
+        body = rows + (
+            '<div class="drv-note">PD is calibrated to current <b>through-the-cycle</b> conditions: '
+            'macro shifts the whole PD <b>level</b> with the economy (reserves &amp; pricing), not the '
+            'applicant&#39;s ranking. The anchored form resists vintage-proxy leakage — see '
+            'docs/01-feature-engineering.md.</div>'
+        )
+    st.markdown(
+        f"""
+        <div class="w98-window">
+          <div class="w98-titlebar"><span>🌐 Economic context — macro overlay (PD level)</span><span class="controls">_ ▢ ✕</span></div>
+          <div class="body">{body}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -326,6 +367,8 @@ def main() -> None:
             submitted = st.form_submit_button("▶  Run Risk Assessment")
 
     with right:
+        rp = get_predictor()
+        render_economic_context(rp.economic_context())
         if submitted:
             code = next(k for k, v in PURPOSE.items() if v == purpose_label)
             form = dict(
@@ -341,19 +384,27 @@ def main() -> None:
                 TotalProsperLoans=prior_loans, OnTimeProsperPayments=ontime,
             )
             inputs = build_inputs(form)
-            rp = get_predictor()
             with st.spinner("Scoring…"):
                 result = rp.assess(inputs, family)
             render_result(family, float(loan_amt), result)
             if family == "finetuned":
                 render_explanation(rp.explain_pd(inputs))
 
+            # v3 loss timing: the hazard model's borrower-specific PD term structure when the
+            # artifact is present, else the empirical curve (marg_pd=None). Coherence choice: keep
+            # the displayed cross-sectional PD as the lifetime LEVEL and take only the hazard's
+            # TIMING (shape), so the headline PD and the ECL's total default mass agree.
+            ts = rp.term_structure(inputs, int(term))
+            hazard_used = ts is not None
+            marg_pd = result["pd"] * (ts / ts.sum()) if hazard_used else None
+
             assum = EconomicAssumptions(funding_rate=funding, servicing_rate=servicing,
                                         capital_ratio=capital_ratio, target_raroc=target_raroc)
             econ = fin_project(float(loan_amt), float(offered_apr), int(term),
-                               result["pd"], result["lgd"], assum)
-            pr = fin_price(float(loan_amt), int(term), result["pd"], result["lgd"], assum)
-            render_financials(float(offered_apr), econ, pr)
+                               result["pd"], result["lgd"], assum, marg_pd=marg_pd)
+            pr = fin_price(float(loan_amt), int(term), result["pd"], result["lgd"], assum,
+                           marg_pd=marg_pd)
+            render_financials(float(offered_apr), econ, pr, hazard_used)
         else:
             st.markdown(
                 '<div class="w98-window"><div class="w98-titlebar"><span>📊 Risk Assessment</span>'
@@ -363,9 +414,12 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    ue = get_predictor().economic_context().get("macro_unemployment_ttc")
+    macro_chip = f'<span class="fixed">Macro (TTC): U {ue:.1f}%</span>' if ue is not None else ''
     st.markdown(
         f'<div class="w98-statusbar"><span>Ready</span>'
         f'<span class="fixed">PD model: {FAMILY_LABELS.get(family, family)}</span>'
+        f'{macro_chip}'
         f'<span class="fixed">EL = PD × LGD × EAD</span></div>',
         unsafe_allow_html=True,
     )

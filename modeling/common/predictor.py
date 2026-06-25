@@ -19,7 +19,9 @@ from autogluon.tabular import TabularPredictor
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "data"))
+sys.path.insert(0, str(REPO_ROOT / "modeling"))
 import features as F  # noqa: E402
+from survival import term_structure as TS  # noqa: E402  (hazard PD term structure; available() guards use)
 
 PD_DIR = REPO_ROOT / "modeling" / "probability-of-default" / "automl_model"
 EAD_DIR = REPO_ROOT / "modeling" / "exposure-at-default" / "automl_model"
@@ -92,6 +94,29 @@ class RiskPredictor:
         ead = max(float(self.ead.predict(X).iloc[0]), 0.0)
         lgd = float(np.clip(self.lgd.predict(X).iloc[0], 0.0, 1.0))
         return {"pd": pd_, "lgd": lgd, "ead": ead, "el": pd_ * lgd * ead, "family": family}
+
+    def term_structure(self, inputs: dict, term: int):
+        """Borrower-specific monthly marginal-default vector from the discrete-time hazard model
+        (modeling/survival/term_structure.py), or None if the hazard artifact is absent.
+
+        Built on the SAME engineered + TTC-macro row the PD model scores (via .to_dict('records')
+        to preserve column dtypes), so the loss timing is consistent with the rest of the
+        assessment. The vector sums to the hazard's own lifetime PD; the caller decides how to
+        combine its *shape* with the headline lifetime PD.
+        """
+        if not TS.available():
+            return None
+        row = self._engineer(self._row(inputs)).to_dict("records")[0]
+        m = TS.marginal_pd(TS.hazard_curve(row, int(term)))
+        return m if m.size and float(m.sum()) > 0 else None
+
+    def economic_context(self) -> dict:
+        """The TTC-anchored macro overlay currently feeding PD (percent units), for display.
+
+        Empty if no macro file is present. These values shift the whole PD *level* with the
+        cycle (reserves/pricing), not the applicant ranking — see docs/01-feature-engineering.md.
+        """
+        return dict(self.macro)
 
     def explain_pd(self, inputs: dict, top: int = 6) -> list[tuple[str, float]]:
         """Top SHAP drivers of this borrower's PD from the XGBoost booster.
