@@ -5,7 +5,7 @@ month a loan defaulted, else 0. This is the data substrate for a hazard model h(
 a loan defaults *in month t given it survived to t*. Building it this way also recovers the
 `Current` loans v1 dropped — they enter honestly as *censored* (still-alive) observations.
 
-See .pipeline/phase2-hazard-plan.md and .pipeline/spec.md. Run:
+See docs/04-discrete-time-hazard-model.md. Run:
     .venv\\Scripts\\python.exe data\\build_loan_month_panel.py
 """
 from __future__ import annotations

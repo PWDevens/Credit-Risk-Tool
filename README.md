@@ -1,52 +1,60 @@
 # Credit Risk Scorecard
 
-A lender-facing credit-risk tool that estimates the **Expected Loss** of a consumer loan from
-borrower and loan characteristics — and turns it into **pricing and provisioning decisions** —
-built on the [Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
+A lender-facing credit-risk engine that estimates the **Expected Loss** of a consumer loan and
+turns it into **pricing and provisioning decisions**, built on the
+[Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
 
-It models each component of the regulatory credit-loss identity and combines them:
+## The financial modeling
+
+Lending is the business of pricing risk. This project models each component of the regulatory
+credit-loss identity and composes them into the figures a lender actually acts on:
 
 ```
 Expected Loss (EL) = PD × LGD × EAD
 ```
 
-| Component | Meaning | Model |
-|-----------|---------|-------|
-| **PD**  | Probability of Default        | Calibrated binary classifier (**XGBoost**, fine-tuned), benchmarked against an AutoML baseline **and** Prosper's own grade ranking |
-| **LGD** | Loss Given Default (fraction) | Regressor, benchmarked against a mean-LGD baseline |
-| **EAD** | Exposure at Default ($)       | Regressor, benchmarked against a full-exposure baseline |
+| Component | Meaning | Why it matters | Model |
+|---|---|---|---|
+| **PD**  | Probability of Default        | how likely the borrower stops paying | Calibrated **XGBoost**, benchmarked vs an AutoML baseline **and** Prosper's own grade ranking |
+| **LGD** | Loss Given Default (fraction) | how much is lost if they do          | Regressor vs a mean-LGD baseline |
+| **EAD** | Exposure at Default ($)       | how much is owed at that point       | Regressor vs a full-exposure baseline |
 
-A local **Streamlit** app (styled as a Windows-98 underwriting terminal) lets a lender enter
-a borrower/loan and: see PD, LGD, EAD and the resulting Expected Loss; toggle between the
-AutoML and fine-tuned (XGBoost) PD models; read a per-borrower **SHAP** explanation of the
-risk drivers; and get **risk-based pricing** — a discounted lifetime expected loss, expected
-profit / RAROC, and a recommended APR.
+`EL` is the expected loss on a single underwriting decision. Spread over the loan's life with a
+**discrete-time hazard term structure**, it becomes a discounted **lifetime ECL** — the CECL / IFRS-9
+provisioning quantity — which in turn drives **expected profit / RAROC** and a **risk-based APR**.
+That chain — PD/LGD/EAD → EL → lifetime ECL → price — is the financial spine of the tool.
 
-**Scope (v1 → v3).** The project is built in layers, each a recognizable credit-risk discipline:
+## The technical approach — building it production-grade
 
-- **v1 — the loss machinery.** Calibrated PD/LGD/EAD models, the `EL` product, the Win98 app,
-  and an AutoML-vs-fine-tuned PD toggle with per-borrower SHAP.
-- **v2 — financial decisioning** (`modeling/common/finance.py`). Turns the risk estimates into
-  money: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based pricing**
-  (break-even and target-return APR).
-- **v3 — making it defensible** (in progress). A measured **feature-engineering** pass, a
-  point-in-time **macro overlay** kept in *through-the-cycle (TTC)–anchored* form, and
-  **out-of-time (vintage) validation** — the way credit models are actually judged. Topic write-ups
-  are indexed in [`docs/`](docs/README.md); the v3 build plan lives in
-  [`.pipeline/v3-plan.md`](.pipeline/v3-plan.md).
+Accuracy is necessary but not sufficient: a model that sets reserves and prices loans has to be
+*defensible*. The build is organized around the disciplines that make it so, not around chasing a
+leaderboard number:
 
-See [Project status](#project-status) for the per-step breakdown.
+- **Honest measurement.** Every result is reported on an **out-of-time (vintage) split** — train on
+  earlier originations, test on later, the credit-risk standard — never a flattering random split.
+- **Calibrated probabilities, not just rankings.** PD is **isotonically calibrated** so `PD × LGD × EAD`
+  is correct *in dollars*, confirmed by an **ECL backtest** against realized losses by vintage.
+- **Leakage control.** The point-in-time **macro overlay** is **through-the-cycle (TTC)–anchored**, so
+  it adds real economic signal without letting the model read the vintage off the unemployment level.
+- **Loss timing, not just loss level.** A **discrete-time hazard model** gives each borrower a monthly
+  PD **term structure** (benchmarked against scikit-survival) — the timing a discounted ECL needs.
+- **Governance.** An **SR 11-7-style model card**, a per-variable data dictionary, and per-topic
+  write-ups document intended use, data, metrics, limitations, and fair-lending treatment.
+
+A local **Streamlit** app (a Windows-98 underwriting terminal) makes it tangible: enter a borrower and
+see PD/LGD/EAD/EL, a per-borrower **SHAP** explanation, the current macro overlay, and full risk-based
+pricing. Layer-by-layer status is in [Project status](#project-status); the full write-ups are indexed
+in [`docs/`](docs/README.md).
 
 > **Governance.** [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md) is the per-variable treatment
 > authority — which fields are features, benchmarks, loss-only labels, or excluded, and why.
-> `features.py` is the executable feature manifest; where the two disagree, `features.py`
-> wins. The build plan lives in [`.pipeline/PROJECT_PLAN.md`](.pipeline/PROJECT_PLAN.md).
+> `features.py` is the executable feature manifest; where the two disagree, `features.py` wins.
 
 ---
 
 ## Project status
 
-🚧 **v1 & v2 complete; v3 in progress.**
+✅ **v1, v2, and v3 complete.**
 
 | Step | Component | Status |
 |------|-----------|--------|
@@ -65,13 +73,11 @@ it was best-or-tied across the cumulative feature-set matrix against LightGBM an
 lender decisions: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based
 pricing** (break-even and target-return APR), surfaced in the app's "Financials" panel.
 
-**v3 (in progress) — depth, time-awareness, and validation.** The theme is making the model
-*defensible* the way credit risk is actually validated, not adding surface area (full plan:
-[.pipeline/v3-plan.md](.pipeline/v3-plan.md)). Landed so far:
+**v3 — complete: depth, time-awareness, and validation.** The theme was making the model
+*defensible* the way credit risk is actually validated, not adding surface area. Delivered:
 
 - ✅ **Out-of-time (vintage) validation** — train on earlier originations, test on later
-  (`run_partc.py` / `run_finalize.py`). This is *the* credit-risk validation standard and is now
-  the lens every feature decision is judged through.
+  (`run_partc.py` / `run_finalize.py`); now the lens every feature decision is judged through.
 - ✅ **Feature-engineering pass** — engineered affordability/credit ratios + an unsupervised
   `RiskCluster`, measured in a cumulative **v1→v4** ablation matrix (`run_version.py`,
   `docs/finetuning_matrix.png`). Honest finding: they're largely **redundant** once clustering is
@@ -79,23 +85,18 @@ pricing** (break-even and target-return APR), surfaced in the app's "Financials"
 - ✅ **Point-in-time macro overlay** — national unemployment + fed funds at origination, kept in
   **through-the-cycle (TTC)–anchored** form after the out-of-time study showed raw macro is partly
   a vintage proxy ([docs/01-feature-engineering.md](docs/01-feature-engineering.md)).
-
-Also landed:
-
-- ✅ **Discrete-time hazard model** (loan-month panel + XGBoost) → a model-driven PD term
-  structure feeding the ECL engine, benchmarked against scikit-survival (IPCW concordance,
-  time-dependent AUC, integrated Brier).
+- ✅ **Discrete-time hazard model** (loan-month panel + XGBoost) → a model-driven PD term structure
+  feeding the ECL engine and the app's lifetime pricing, benchmarked against scikit-survival
+  (IPCW concordance, time-dependent AUC, integrated Brier).
 - ✅ **ECL backtest** vs realized dollar losses by vintage — the financial engine is calibrated to
   within ~2% in **dollars** (overall predicted/realized ratio 1.02).
-- ✅ **Packaging:** topic write-ups for each piece of the work — feature engineering, PD finetuning,
-  validation, the hazard model, ECL backtesting — plus an **SR 11-7-style model card**, all indexed in
+- ✅ **Packaging** — topic write-ups for feature engineering, PD finetuning, validation, the hazard
+  model, and ECL backtesting, plus an **SR 11-7-style model card**, all indexed in
   [docs/](docs/README.md).
 
-Remaining:
-
-- 🔭 **Future:** regional (state) unemployment overlay (pipeline built — `build_state_features.py` —
-  needs the data pulled), prepayment / competing-risks, a two-stage LGD model, and CCAR/IFRS-9
-  stress scenarios.
+**Deferred beyond v3 (future):** regional (state) unemployment overlay (pipeline built —
+`build_state_features.py` — needs the data pulled), prepayment / competing-risks survival, a
+two-stage LGD model, CCAR/IFRS-9 stress scenarios, and ECOA adverse-action reason codes.
 
 ---
 
@@ -263,8 +264,9 @@ The app turns PD/LGD/EAD into lender decisions via `modeling/common/finance.py`:
 **lifetime ECL** (PD term-structure × amortizing EAD × discounting at the loan's rate),
 **expected profit / RAROC**, and **risk-based pricing** (break-even APR and the APR that hits
 a target RAROC). The offered APR is a financial *input/output*, never a model feature — which
-is exactly why the price can be solved for. See the module's plain-English header for the
-assumptions (the PD-timing approximation; prepayment is not yet modeled).
+is exactly why the price can be solved for. Loss timing comes from the discrete-time hazard term
+structure (with an empirical-curve fallback); see the module's plain-English header for the
+remaining assumptions (prepayment is not yet modeled).
 
 ### Platform note
 

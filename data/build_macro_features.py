@@ -130,7 +130,7 @@ def add_derived_columns(macro: pd.DataFrame) -> pd.DataFrame:
         *_annual_avg / *_annual_change       : calendar-year mean and its YoY % change
         *_quarterly_avg / *_quarterly_change : calendar-quarter mean and its QoQ % change
 
-    Long-run mean uses features.MACRO_LONGRUN_WINDOW. See .pipeline/time-smoothing.md.
+    Long-run mean uses features.MACRO_LONGRUN_WINDOW. See docs/01-feature-engineering.md.
     """
     import features as F  # local import: only needed when this script is run
 

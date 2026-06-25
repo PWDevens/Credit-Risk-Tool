@@ -34,7 +34,7 @@ PROCESSED_DIR = REPO_ROOT / "data" / "processed"
 # pipeline joins it only if the file exists (graceful no-op otherwise).
 MACRO_CSV = REPO_ROOT / "data" / "raw" / "macro_monthly.csv"
 
-# --- Through-the-cycle (TTC) anchoring (see docs/01-feature-engineering.md, .pipeline/time-smoothing.md)
+# --- Through-the-cycle (TTC) anchoring (see docs/01-feature-engineering.md)
 # Raw point-in-time unemployment is spiky (2009 GFC, 2020 COVID) and correlates with vintage,
 # so on a random split it inflates AUC by letting the model memorize cohort default rates.
 # TTC anchoring smooths it (EWMA) and shrinks toward a long-run mean. build_macro_features.py

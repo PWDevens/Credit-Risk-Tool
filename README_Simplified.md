@@ -167,10 +167,11 @@ The project is built in stages, each one a real skill that credit teams use:
 
 - **Version 1 — done.** The core risk models (PD, LGD, EAD), the Expected Loss math, and the app.
 - **Version 2 — done.** The money tools: lifetime loss cushion, expected return, and pricing.
-- **Version 3 — in progress.** Making the model trustworthy and honest: testing on future loans,
-  carefully checking which extra clues actually help, and adding the smoothed economy data. Still
-  to come: a model that estimates *when* a loan is likely to go bad, and a written "model card"
-  that documents how it works and its limits.
+- **Version 3 — done.** Making the model trustworthy and honest: testing on *future* loans, carefully
+  checking which extra clues actually help, adding the smoothed economy data, a model that estimates
+  *when* a loan is likely to go bad (which now feeds the app's lifetime pricing), checking the
+  predicted dollar losses against what really happened, and a written "model card" documenting how it
+  works and its limits.
 
 ---
 
