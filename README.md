@@ -12,13 +12,13 @@ Expected Loss (EL) = PD × LGD × EAD
 
 | Component | Meaning | Model |
 |-----------|---------|-------|
-| **PD**  | Probability of Default        | Calibrated binary classifier (**LightGBM**, fine-tuned), benchmarked against an AutoML baseline **and** Prosper's own grade ranking |
+| **PD**  | Probability of Default        | Calibrated binary classifier (**XGBoost**, fine-tuned), benchmarked against an AutoML baseline **and** Prosper's own grade ranking |
 | **LGD** | Loss Given Default (fraction) | Regressor, benchmarked against a mean-LGD baseline |
 | **EAD** | Exposure at Default ($)       | Regressor, benchmarked against a full-exposure baseline |
 
 A local **Streamlit** app (styled as a Windows-98 underwriting terminal) lets a lender enter
 a borrower/loan and: see PD, LGD, EAD and the resulting Expected Loss; toggle between the
-AutoML and fine-tuned (LightGBM) PD models; read a per-borrower **SHAP** explanation of the
+AutoML and fine-tuned (XGBoost) PD models; read a per-borrower **SHAP** explanation of the
 risk drivers; and get **risk-based pricing** — a discounted lifetime expected loss, expected
 profit / RAROC, and a recommended APR.
 
@@ -53,12 +53,12 @@ See [Project status](#project-status) for the per-step breakdown.
 | B | AutoML baselines — PD/EAD/LGD + lazy/champion (`train_baselines.py`) | ✅ Done |
 | C | `RiskPredictor` serving interface (`modeling/common/predictor.py`)   | ✅ Done |
 | D | Streamlit Win98 frontend (`app/app.py`)                             | ✅ Done |
-| E | Fine-tuned PD — LightGBM + SHAP, behind the toggle                   | ✅ Done |
+| E | Fine-tuned PD — XGBoost + SHAP, behind the toggle                    | ✅ Done |
 
 **v1 (Steps A–E) is complete**: a locally-run Win98 dashboard scoring PD/LGD/EAD/EL, with a
-working AutoML-vs-LightGBM PD toggle and per-borrower SHAP. The LightGBM model was chosen
-after a like-for-like comparison against XGBoost and Random Forest (kept as `finetune_*.py`
-due-diligence scripts).
+working AutoML-vs-XGBoost PD toggle and per-borrower SHAP. XGBoost is the shipped challenger —
+it was best-or-tied across the cumulative feature-set matrix against LightGBM and Random Forest
+(all kept as `finetune_*.py` due-diligence scripts).
 
 **v2 — complete.** A financial engine (`modeling/common/finance.py`) turns PD/LGD/EAD into
 lender decisions: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based
@@ -180,7 +180,8 @@ To enable the fine-tuned PD toggle and the data-built default-timing curve (opti
 app falls back to the AutoML PD and a built-in timing curve without them):
 
 ```bash
-python modeling/probability-of-default/finetune_lightgbm.py   # fine-tuned PD (LightGBM) + SHAP
+python modeling/build_risk_clusters.py                        # RiskCluster segmentation (train-only)
+python modeling/probability-of-default/finetune_xgboost.py    # fine-tuned PD (XGBoost) + SHAP
 python modeling/build_default_timing.py                       # default-timing curve for pricing
 ```
 
@@ -213,11 +214,12 @@ streamlit run app/app.py
 - **Imputation highlights.** Credit-bureau numerics → median; `DebtToIncomeRatio` →
   group-median by `IncomeRange` (cap `10.01` flagged, not treated as a value); prior-Prosper
   fields → fill 0 + `is_repeat_borrower` (informative nulls, never median).
-- **Fine-tuned PD.** LightGBM, FLAML-tuned and isotonic-calibrated, chosen after a
-  like-for-like comparison with XGBoost and Random Forest (all on the same split/features).
-  Shipped on the base + engineered + RiskCluster + TTC-macro feature set (see the macro bullet
-  below). It ties the AutoML baseline within statistical noise; shipped for its single-model
-  transparency and fast SHAP. EAD/LGD stay on the AutoML baseline under both toggle states.
+- **Fine-tuned PD.** XGBoost, FLAML-tuned and isotonic-calibrated, chosen after a like-for-like
+  comparison with LightGBM and Random Forest (all on the same split/features). It was **best or
+  tied in every version of the cumulative matrix** and tops it at v4 (0.7612), edging the AutoML
+  baseline (0.750) once the macro overlay is in. Shipped on the base + engineered + RiskCluster +
+  TTC-macro feature set (see the macro bullet below), with per-borrower SHAP for the "Why?" panel.
+  EAD/LGD stay on the AutoML baseline under both toggle states.
 - **Macro overlay (TTC-anchored).** Unemployment + fed funds at origination are added as a
   *through-the-cycle*–anchored feature (smoothed and shrunk toward a long-run mean), not the
   raw point-in-time level. We tested this hard: raw macro lifts AUC ~+0.015 on a random split
@@ -250,7 +252,7 @@ assumptions (the PD-timing approximation; prepayment is not yet modeled).
 ### Platform note
 
 Everything runs natively on **Windows** (and macOS/Linux). The AutoML baselines use
-**AutoGluon** and the fine-tuned PD model uses **LightGBM** — no WSL2, Docker, or Linux-only
+**AutoGluon** and the fine-tuned PD model uses **XGBoost** — no WSL2, Docker, or Linux-only
 dependency is required.
 
 ---

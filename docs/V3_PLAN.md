@@ -13,6 +13,65 @@ not model-bound** — so v3's accuracy work is feature engineering, and the bigg
 
 ---
 
+## Status & remaining-work plan (updated 2026-06)
+
+**Done since this plan was written:**
+
+- ✅ **Out-of-time (vintage) validation harness** — `run_partc.py` / `run_finalize.py`. The
+  random-vs-OOT study is in place and is now the lens for every feature decision.
+- ✅ **Feature-engineering pass** — engineered ratios + `RiskCluster`, measured in the cumulative
+  v1→v4 matrix (`run_matrix.py`, `docs/finetuning_matrix.png`). Finding: redundant once clustering
+  is in; the ~0.75 ceiling is **information-bound**, not model-bound.
+- ✅ **Point-in-time macro overlay**, kept **TTC-anchored** after the OOT study
+  (`docs/macro-decision.md`).
+- ✅ **Production PD model = calibrated XGBoost** (best-or-tied across the matrix, test AUC 0.7612).
+
+**Remaining — phased:**
+
+### Phase 0 — ✅ DONE: keep macro out of borrower-level SHAP
+Macro features were surfacing as top drivers in the per-borrower "Why?" panel, but macro is
+identical for every applicant on a given day, so it is not a valid adverse-action reason.
+**Shipped:** `predictor.explain_pd()` now drops `macro_`/`state_` columns from the per-borrower
+reason codes (they still drive the model; they're just not shown as a personal "why").
+
+### Phase 1 — ✅ DONE: sharpen validation metrics
+**Shipped:** `metrics.calibration_table()` (decile predicted-vs-actual) + `modeling/calibration_report.py`
+(by-decile and by-vintage views for the production model; the calibrated XGBoost is well-calibrated —
+weighted mean |pred − actual| ≈ 0.017 across deciles). Added **PR-AUC + BaseRate** to `pd_metrics`
+as a secondary, prevalence-captioned metric (never compared across the random/OOT split).
+
+### Phase 2 — discrete-time hazard model (the technical core)
+**→ Detailed build plan: [`docs/phase2-hazard-plan.md`](phase2-hazard-plan.md).** In brief:
+- Build the **loan-month panel**: one row per loan per month it was alive; target =
+  `defaulted_this_month`; the month index (or a spline of it) as a feature. This recovers the
+  `Current` loans v1 dropped, entering them as **censored** observations.
+- Fit the **XGBoost** classifier on it → the predicted probability *is* the monthly hazard `h(t|x)`.
+  Calibrate + SHAP as today.
+- **Wire it into `finance.py`** to replace the empirical default-timing curve → a model-driven PD
+  term structure for the lifetime ECL.
+- **Benchmark** vs scikit-survival (`RandomSurvivalForest` / `GradientBoostingSurvivalAnalysis`);
+  evaluate with time-dependent AUC, IPCW concordance, and integrated Brier score.
+
+### Phase 3 — ECL backtest (tie predictions to realized dollars)
+- Predicted vs **realized dollar losses by vintage**, with calibration-by-vintage plots. This ties
+  the financial engine to reality and is the credibility centerpiece.
+
+### Phase 4 — packaging (the portfolio narrative)
+- **Model card (SR 11-7 style):** intended use, data, metrics, limitations, the fair-lending
+  treatment of geography/occupation, and a reject-inference / selection-bias note (Prosper shows
+  only *funded* loans).
+- **Results notebook** with the money charts: PD term-structure curves, calibration-by-vintage, OOT
+  performance, and the ECL backtest. Refresh the README to point to it.
+
+**Sequence: 0 → 1 → 2 → 3 → 4.** Phase 0 is a correctness fix; Phase 1 is cheap and de-risks the
+rest; Phase 2 is the big build; Phase 3 depends on Phase 2's timing; Phase 4 packages the story.
+
+**Deferred beyond v3 (🔭):** regional state-unemployment overlay (pipeline already built —
+`build_state_features.py` — needs the FRED pull), prepayment / competing-risks survival, a two-stage
+(cure → severity) LGD model, CCAR / IFRS-9 stress scenarios, and full ECOA adverse-action reason codes.
+
+---
+
 ## Design decision: discrete-time hazard, with scikit-survival as a benchmark
 
 The v2 finance engine spreads a single lifetime PD over the loan's life using an **empirical**

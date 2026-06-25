@@ -2,7 +2,7 @@
 
 A lender enters origination-time borrower/loan facts and sees PD, LGD, EAD, and the
 resulting Expected Loss (EL = PD x LGD x EAD). It toggles between the AutoML and
-fine-tuned (LightGBM) PD models, explains the PD per-borrower with SHAP, and adds
+fine-tuned (XGBoost) PD models, explains the PD per-borrower with SHAP, and adds
 risk-based pricing (lifetime ECL, expected profit/RAROC, recommended APR).
 
 Price (the offered APR) is collected only as a financial input/output — it is never
@@ -200,7 +200,7 @@ def render_result(family: str, loan_amt: float, r: dict) -> None:
 
 
 def render_explanation(drivers: list) -> None:
-    """Render the per-borrower SHAP reason codes (LightGBM PD) as a Win98 panel."""
+    """Render the per-borrower SHAP reason codes (XGBoost PD) as a Win98 panel."""
     if not drivers:
         return
     rows = ""
@@ -215,7 +215,7 @@ def render_explanation(drivers: list) -> None:
           <div class="body">
             {rows}
             <div class="drv-note">Log-odds contribution to this borrower's default probability,
-            from the LightGBM model. Positive pushes PD up, negative pushes it down.</div>
+            from the XGBoost model. Positive pushes PD up, negative pushes it down.</div>
           </div>
         </div>
         """,
