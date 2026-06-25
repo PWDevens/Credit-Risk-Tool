@@ -79,12 +79,19 @@ pricing** (break-even and target-return APR), surfaced in the app's "Financials"
   **through-the-cycle (TTC)–anchored** form after the out-of-time study showed raw macro is partly
   a vintage proxy ([docs/macro-decision.md](docs/macro-decision.md)).
 
+Also landed:
+
+- ✅ **Discrete-time hazard model** (loan-month panel + XGBoost) → a model-driven PD term
+  structure feeding the ECL engine, benchmarked against scikit-survival (IPCW concordance,
+  time-dependent AUC, integrated Brier).
+- ✅ **ECL backtest** vs realized dollar losses by vintage — the financial engine is calibrated to
+  within ~2% in **dollars** (overall predicted/realized ratio 1.02).
+- ✅ **Packaging:** an **SR 11-7-style model card** ([docs/MODEL_CARD.md](docs/MODEL_CARD.md)) and a
+  **results write-up with the money charts** ([docs/RESULTS.md](docs/RESULTS.md) — PD term structure,
+  calibration-by-vintage, out-of-time performance, ECL backtest).
+
 Remaining:
 
-- ⏳ **Discrete-time hazard model** (loan-month panel + LightGBM) → a model-driven PD term
-  structure feeding the ECL engine, benchmarked against scikit-survival.
-- ⏳ **ECL backtest** vs realized dollar losses by vintage, an **SR 11-7-style model card**, and a
-  results notebook with the money charts.
 - 🔭 **Future:** regional (state) unemployment overlay (pipeline built — `build_state_features.py` —
   needs the data pulled), prepayment / competing-risks, a two-stage LGD model, and CCAR/IFRS-9
   stress scenarios.
@@ -124,13 +131,22 @@ modeling/
   run_partc.py             Out-of-time study: {random, OOT} x {raw, TTC} macro grid
   run_finalize.py          No-macro OOT baseline + matrix-cell backfills
   results_visual.py        Plots the matrix -> docs/finetuning_matrix.png
+  survival/                Discrete-time hazard: loan-month panel + XGBoost hazard, PD term
+                           structure (term_structure.py), scikit-survival benchmark
+  ecl_backtest.py          ECL backtest: predicted-vs-realized $ loss by origination vintage
+  results_charts.py        Builds the results write-up's money charts -> docs/ (committed PNGs)
   model-results/           Saved metric tables + matrices (gitignored)
 app/
   app.py                   Streamlit Win98 underwriting terminal (PD/LGD/EAD/EL, toggle, SHAP, financials)
 docs/
   V3_PLAN.md               v3 roadmap (time-aware hazard, OOT validation, packaging)
   macro-decision.md        Why macro is used in TTC-anchored form (the out-of-time study write-up)
+  MODEL_CARD.md            SR 11-7-style model card (intended use, data, metrics, limitations, bias)
+  RESULTS.md               Results write-up with the four money charts (points back from README)
   finetuning_matrix.png    The v1->v4 challenger chart (tracked deliverable)
+  pd_term_structure.png    Cumulative default curves by risk tier (results_charts.py)
+  calibration_by_vintage.png  Predicted vs actual PD by origination year (results_charts.py)
+  ecl_backtest.png         Predicted vs realized $ loss by vintage (committed copy; results_charts.py)
 models/                    Serialized artifacts (gitignored): risk_cluster.joblib,
                            feature_defaults.json, default_timing.json; pd_*.joblib live beside
                            the PD scripts, AutoGluon dirs as modeling/<metric>/automl_model/
