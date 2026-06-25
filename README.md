@@ -1,8 +1,8 @@
 # Credit Risk Scorecard
 
-A lender-facing credit-risk tool that estimates the **Expected Loss** of a consumer
-loan from borrower and loan characteristics, built on the
-[Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
+A lender-facing credit-risk tool that estimates the **Expected Loss** of a consumer loan from
+borrower and loan characteristics — and turns it into **pricing and provisioning decisions** —
+built on the [Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
 
 It models each component of the regulatory credit-loss identity and combines them:
 
@@ -22,6 +22,20 @@ AutoML and fine-tuned (LightGBM) PD models; read a per-borrower **SHAP** explana
 risk drivers; and get **risk-based pricing** — a discounted lifetime expected loss, expected
 profit / RAROC, and a recommended APR.
 
+**Scope (v1 → v3).** The project is built in layers, each a recognizable credit-risk discipline:
+
+- **v1 — the loss machinery.** Calibrated PD/LGD/EAD models, the `EL` product, the Win98 app,
+  and an AutoML-vs-fine-tuned PD toggle with per-borrower SHAP.
+- **v2 — financial decisioning** (`modeling/common/finance.py`). Turns the risk estimates into
+  money: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based pricing**
+  (break-even and target-return APR).
+- **v3 — making it defensible** (in progress). A measured **feature-engineering** pass, a
+  point-in-time **macro overlay** kept in *through-the-cycle (TTC)–anchored* form, and
+  **out-of-time (vintage) validation** — the way credit models are actually judged. Plan and
+  decision records: [`docs/V3_PLAN.md`](docs/V3_PLAN.md), [`docs/macro-decision.md`](docs/macro-decision.md).
+
+See [Project status](#project-status) for the per-step breakdown.
+
 > **Governance.** [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md) is the per-variable treatment
 > authority — which fields are features, benchmarks, loss-only labels, or excluded, and why.
 > `features.py` is the executable feature manifest; where the two disagree, `features.py`
@@ -31,7 +45,7 @@ profit / RAROC, and a recommended APR.
 
 ## Project status
 
-🚧 **v1 complete; v2 in progress.**
+🚧 **v1 & v2 complete; v3 in progress.**
 
 | Step | Component | Status |
 |------|-----------|--------|
@@ -46,10 +60,34 @@ working AutoML-vs-LightGBM PD toggle and per-borrower SHAP. The LightGBM model w
 after a like-for-like comparison against XGBoost and Random Forest (kept as `finetune_*.py`
 due-diligence scripts).
 
-**v2 (in progress).** A financial engine (`modeling/common/finance.py`) adds a discounted
-**lifetime ECL**, **expected profit / RAROC**, and **risk-based pricing** (break-even and
-target-return APR), surfaced in the app's "Financials" panel. Remaining: feature engineering
-to lift PD accuracy, plus prepayment, macro/stress scenarios, and a two-stage LGD model.
+**v2 — complete.** A financial engine (`modeling/common/finance.py`) turns PD/LGD/EAD into
+lender decisions: a discounted **lifetime ECL**, **expected profit / RAROC**, and **risk-based
+pricing** (break-even and target-return APR), surfaced in the app's "Financials" panel.
+
+**v3 (in progress) — depth, time-awareness, and validation.** The theme is making the model
+*defensible* the way credit risk is actually validated, not adding surface area (full plan:
+[docs/V3_PLAN.md](docs/V3_PLAN.md)). Landed so far:
+
+- ✅ **Out-of-time (vintage) validation** — train on earlier originations, test on later
+  (`run_partc.py` / `run_finalize.py`). This is *the* credit-risk validation standard and is now
+  the lens every feature decision is judged through.
+- ✅ **Feature-engineering pass** — engineered affordability/credit ratios + an unsupervised
+  `RiskCluster`, measured in a cumulative **v1→v4** ablation matrix (`run_version.py`,
+  `docs/finetuning_matrix.png`). Honest finding: they're largely **redundant** once clustering is
+  in — the ~0.75 AUC ceiling is information-bound, not model-bound.
+- ✅ **Point-in-time macro overlay** — national unemployment + fed funds at origination, kept in
+  **through-the-cycle (TTC)–anchored** form after the out-of-time study showed raw macro is partly
+  a vintage proxy ([docs/macro-decision.md](docs/macro-decision.md)).
+
+Remaining:
+
+- ⏳ **Discrete-time hazard model** (loan-month panel + LightGBM) → a model-driven PD term
+  structure feeding the ECL engine, benchmarked against scikit-survival.
+- ⏳ **ECL backtest** vs realized dollar losses by vintage, an **SR 11-7-style model card**, and a
+  results notebook with the money charts.
+- 🔭 **Future:** regional (state) unemployment overlay (pipeline built — `build_state_features.py` —
+  needs the data pulled), prepayment / competing-risks, a two-stage LGD model, and CCAR/IFRS-9
+  stress scenarios.
 
 ---
 
@@ -57,24 +95,46 @@ to lift PD accuracy, plus prepayment, macro/stress scenarios, and a two-stage LG
 
 ```
 data/
-  loader.py            Pull raw data from Kaggle (via kagglehub)
-  features.py          Authoritative feature manifest: treatment, population, derived features
-  data_cleaning.py     Imputation pipeline (driven by the manifest)
-  data_processor.py    Train/test split (stratified on the binary target)
-  data_analysis.py     EDA toolkit (missing report, WOE/IV ranking, target-rate views)
-  raw/                 Raw downloaded dataset (gitignored)
-  processed/           Train/test splits (gitignored)
+  loader.py                Pull raw data from Kaggle (via kagglehub)
+  features.py              Authoritative manifest: treatment, population, derived + engineered
+                           features, RiskCluster, macro/state joins, PD/EAD/LGD labels
+  data_cleaning.py         Imputation pipeline (manifest-driven)
+  data_processor.py        Train/test split (stratified on the binary target)
+  data_analysis.py         EDA toolkit (missing report, WOE/IV ranking, target-rate views)
+  build_macro_features.py  Pull + TTC-smooth NATIONAL macro (FRED unemployment + fed funds)
+  build_state_features.py  Pull + TTC-smooth PER-STATE unemployment (future regional overlay)
+  raw/                     Raw dataset + macro panels (gitignored; macro_monthly.csv tracked)
+  processed/               Train/test splits (gitignored)
 modeling/
-  common/                  Shared code: data, metrics, RiskPredictor, FLAML harness, finance engine
-  probability-of-default/  PD AutoML baseline + fine-tuned challengers (finetune_xgboost/lightgbm/rf.py)
+  common/
+    data.py                Load splits + build per-metric (X, y) with feature-set switches
+    metrics.py             PD/EAD/LGD metric suites (AUC/Gini/KS/Brier, calibration)
+    predictor.py           RiskPredictor — the in-process scoring API the app calls
+    finetune.py            Shared FLAML tune + isotonic-calibrate + eval harness
+    finance.py             Financial engine: amortization, lifetime ECL, RAROC, risk-based pricing
+  probability-of-default/  PD AutoML baseline + finetune_{xgboost,lightgbm,rf,logistic}.py
   exposure-at-default/     EAD AutoML baseline
   loss-given-default/      LGD AutoML baseline
-  model-results/           Saved metrics tables (gitignored)
   train_baselines.py       Trains the three AutoGluon baselines (resplits from raw first)
-  build_default_timing.py  Builds the default-timing curve for the finance engine
-app/                   Streamlit Win98 app (app.py)
-models/                Serialized artifacts: AutoGluon dirs, pd_lightgbm.joblib,
-                       feature_defaults.json, default_timing.json (all gitignored)
+  build_default_timing.py  Default-timing curve for the finance engine
+  build_risk_clusters.py   Fits the persisted KMeans RiskCluster pipeline (train-only)
+  diagnose_features.py     IV/WOE + collinearity (VIF / Spearman) feature diagnostics
+  run_matrix.py            Crash-resilient cumulative v1->v4 feature-set matrix (per-cell isolation)
+  run_version.py           Single-version run with IV/WOE table + explainability drivers
+  run_partc.py             Out-of-time study: {random, OOT} x {raw, TTC} macro grid
+  run_finalize.py          No-macro OOT baseline + matrix-cell backfills
+  results_visual.py        Plots the matrix -> docs/finetuning_matrix.png
+  model-results/           Saved metric tables + matrices (gitignored)
+app/
+  app.py                   Streamlit Win98 underwriting terminal (PD/LGD/EAD/EL, toggle, SHAP, financials)
+docs/
+  V3_PLAN.md               v3 roadmap (time-aware hazard, OOT validation, packaging)
+  macro-decision.md        Why macro is used in TTC-anchored form (the out-of-time study write-up)
+  finetuning_matrix.png    The v1->v4 challenger chart (tracked deliverable)
+models/                    Serialized artifacts (gitignored): risk_cluster.joblib,
+                           feature_defaults.json, default_timing.json; pd_*.joblib live beside
+                           the PD scripts, AutoGluon dirs as modeling/<metric>/automl_model/
+DATA_DICTIONARY.md         Per-variable treatment authority (features / benchmarks / labels / excluded)
 ```
 
 > `features.py` is the single source of truth for model inputs. Only fields knowable **at

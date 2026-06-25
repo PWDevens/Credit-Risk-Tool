@@ -1,12 +1,24 @@
+# secrets & virtualenv
 secrets/
-__pycache__/
-data/raw/
 .venv/
+
+# python caches & logs
+__pycache__/
+*.log
+
+# data — raw + processed are large / regenerable and stay out of git. Exception: the small,
+# FRED-flaky derived macro panels are tracked so features.py runs without re-fetching them.
+data/raw/*
+!data/raw/macro_monthly.csv
+!data/raw/state_monthly.csv
 data/processed/
-.pipeline/
+
+# serialized model artifacts (regenerable from the modeling scripts)
 models/
 modeling/**/automl_model/
 modeling/model-results/
 AutogluonModels/
 *.joblib
-*.log
+
+# internal planning notes
+.pipeline/
