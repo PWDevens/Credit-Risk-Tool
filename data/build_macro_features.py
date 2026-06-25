@@ -29,6 +29,7 @@ import os
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,50 @@ def build_macro_table() -> pd.DataFrame:
     return macro.sort_values("ym")
 
 
+def add_derived_columns(macro: pd.DataFrame) -> pd.DataFrame:
+    """Add all derived macro columns (single source of truth, reproducible). Per raw series:
+
+      TRAILING / point-in-time clean (safe as origination-time features):
+        *_ma12 : 12-month trailing moving average (dampens one-month spikes)
+        *_ewma : exponential moving average, halflife 6 months
+        *_ttc  : TTC_WEIGHT*ewma + (1-TTC_WEIGHT)*long_run_mean (anchored toward the cycle mean)
+        *_gap  : raw - long_run_mean (cyclical deviation from normal)
+        *_yoy  : (raw - raw 12 months ago) / raw 12 months ago  (trailing year-over-year change)
+        *_ln   : natural log of the level (helps LINEAR models; no effect on trees)
+
+      CALENDAR-period (NOTE: forward-looking WITHIN the period — a Jan loan 'sees' the whole
+      year/quarter, so these are mild look-ahead; prefer the trailing forms above for PIT):
+        *_annual_avg / *_annual_change       : calendar-year mean and its YoY % change
+        *_quarterly_avg / *_quarterly_change : calendar-quarter mean and its QoQ % change
+
+    Long-run mean uses features.MACRO_LONGRUN_WINDOW. See .pipeline/time-smoothing.md.
+    """
+    import features as F  # local import: only needed when this script is run
+
+    macro = macro.sort_values("ym").reset_index(drop=True)
+    lo, hi = F.MACRO_LONGRUN_WINDOW
+    w = F.TTC_WEIGHT
+    year = macro["ym"].str[:4].astype(int)
+    yq = year.astype(str) + "Q" + ((macro["ym"].str[5:7].astype(int) - 1) // 3 + 1).astype(str)
+    for col in SERIES.values():
+        s = pd.to_numeric(macro[col], errors="coerce")
+        # trailing / point-in-time-clean
+        macro[f"{col}_ma12"] = s.rolling(12, min_periods=1).mean()
+        ewma = s.ewm(halflife=6).mean()
+        macro[f"{col}_ewma"] = ewma
+        longrun = float(s[(macro["ym"] >= lo) & (macro["ym"] <= hi)].mean())
+        macro[f"{col}_ttc"] = w * ewma + (1.0 - w) * longrun
+        macro[f"{col}_gap"] = s - longrun
+        macro[f"{col}_yoy"] = (s - s.shift(12)) / s.shift(12)
+        macro[f"{col}_ln"] = np.log(s)
+        # calendar-period (look-ahead within the period — kept for reference/testing)
+        macro[f"{col}_annual_avg"] = s.groupby(year).transform("mean")
+        macro[f"{col}_annual_change"] = year.map(s.groupby(year).mean().pct_change())
+        macro[f"{col}_quarterly_avg"] = s.groupby(yq).transform("mean")
+        macro[f"{col}_quarterly_change"] = yq.map(s.groupby(yq).mean().pct_change())
+    return macro
+
+
 def assign_macro(df: pd.DataFrame, macro_path: Path = MACRO_CSV) -> pd.DataFrame:
     """Join macro_unemployment / macro_fedfunds onto df by LoanOriginationDate's year-month."""
     macro = pd.read_csv(macro_path, dtype={"ym": str}).set_index("ym")
@@ -126,9 +171,10 @@ def assign_macro(df: pd.DataFrame, macro_path: Path = MACRO_CSV) -> pd.DataFrame
 def main() -> None:
     print("Building macro table (local CSV -> FRED API -> fredgraph.csv) ...")
     macro = build_macro_table()
+    macro = add_derived_columns(macro)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     macro.to_csv(MACRO_CSV, index=False)
-    print(f"saved {MACRO_CSV}  ({len(macro):,} rows)")
+    print(f"saved {MACRO_CSV}  ({len(macro):,} rows, {macro.shape[1]} cols)")
     print(macro.tail(3).to_string(index=False))
 
 

@@ -23,29 +23,58 @@ def load_frame(split: str) -> pd.DataFrame:
     return F.cast_categoricals(df)
 
 
-def _feature_cols(include_engineered: bool = False, include_cluster: bool = False,
-                  include_macro: bool = False) -> list:
-    """Base features, optionally + engineered numerics, + RiskCluster, + macro overlay.
+OOT_CUTOFF = "2013-01-01"   # out-of-time split: train < cutoff, test >= cutoff (by origination)
 
-    Split into flags so the matrix can isolate each ingredient:
-      v1 base | v2 base+cluster | v3 base+engineered | v4 base+engineered+cluster.
-    include_macro opts into the point-in-time macro features (only present once
-    build_macro_features.py + a data regen have been run). AutoML stays all-False.
+
+def _feature_cols(include_engineered: bool = False, include_cluster: bool = False,
+                  macro_set=None) -> list:
+    """Base features, optionally + engineered numerics, + RiskCluster, + a macro set.
+
+    macro_set: None | 'raw' (point-in-time level) | 'ttc' (TTC-anchored + gap). Used by the
+    matrix and by Part C (raw vs TTC under random vs OOT). AutoML stays all-off.
     """
     cols = list(F.MODEL_FEATURES)
     if include_engineered:
         cols += F._ENGINEERED_NUMERIC
     if include_cluster:
         cols += ["RiskCluster"]
-    if include_macro:
+    if macro_set == "raw":
         cols += F.MACRO_FEATURES
+    elif macro_set == "ttc":
+        cols += F.MACRO_FEATURES_TTC
+    elif macro_set == "robust":
+        cols += F.MACRO_FEATURES_ROBUST
     return cols
 
 
 def pd_Xy(df: pd.DataFrame, include_engineered: bool = False, include_cluster: bool = False,
           include_macro: bool = False):
-    cols = _feature_cols(include_engineered, include_cluster, include_macro)
+    """Backward-compatible: include_macro=True maps to the raw macro set."""
+    cols = _feature_cols(include_engineered, include_cluster, "raw" if include_macro else None)
     return df[cols].copy(), df[F.PD_TARGET].astype(int)
+
+
+def pd_split(split_mode: str = "random", *, include_engineered: bool = False,
+             include_cluster: bool = False, macro_set=None):
+    """Return (X_train, y_train, X_test, y_test) for a given split mode + feature set.
+
+    split_mode='random' uses the stored stratified split; 'oot' re-splits the full frame by
+    LoanOriginationDate (train < OOT_CUTOFF, test >= OOT_CUTOFF) to test generalization to
+    unseen vintages. Note: RiskCluster is fit on the random-train split, so under 'oot' it
+    carries a mild fit-window mismatch (documented; cluster's marginal IV makes it minor).
+    """
+    cols = _feature_cols(include_engineered, include_cluster, macro_set)
+    if split_mode == "random":
+        tr, te = load_frame("train"), load_frame("test")
+    elif split_mode == "oot":
+        full = pd.concat([load_frame("train"), load_frame("test")], ignore_index=True)
+        orig = pd.to_datetime(full["LoanOriginationDate"], errors="coerce")
+        cut = pd.Timestamp(OOT_CUTOFF)
+        tr, te = full[orig < cut].copy(), full[orig >= cut].copy()
+    else:
+        raise ValueError(f"unknown split_mode {split_mode!r}")
+    return (tr[cols].copy(), tr[F.PD_TARGET].astype(int),
+            te[cols].copy(), te[F.PD_TARGET].astype(int))
 
 
 def _defaulted(df: pd.DataFrame) -> pd.DataFrame:

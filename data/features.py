@@ -36,6 +36,24 @@ PROCESSED_DIR = REPO_ROOT / "data" / "processed"
 MACRO_CSV = REPO_ROOT / "data" / "raw" / "macro_monthly.csv"
 MACRO_FEATURES = ["macro_unemployment", "macro_fedfunds"]
 
+# --- Through-the-cycle (TTC) anchoring config (see .pipeline/time-smoothing.md) -------------
+# Raw point-in-time unemployment is spiky (2009 GFC, 2020 COVID) and correlates with vintage,
+# so on a random split it inflates AUC by letting the model memorize cohort default rates.
+# TTC anchoring smooths it (EWMA) and shrinks it toward a long-run mean, trading a little
+# random-split AUC for robustness through downturns + better out-of-time generalization.
+# build_macro_features.py produces the *_ma12 / *_ewma / *_ttc / *_gap columns.
+TTC_WEIGHT = 0.5                                # macro_ttc = w*smoothed_PIT + (1-w)*long_run_mean
+MACRO_LONGRUN_WINDOW = ("1990-01", "2019-12")   # stable anchor window (excludes the COVID spike)
+# Robust macro set: TTC-anchored levels + the unemployment cyclical gap. To ACTIVATE, set
+# MACRO_FEATURES = MACRO_FEATURES_TTC and regenerate (build_macro_features -> features ->
+# build_risk_clusters). Kept separate so the raw-macro matrix (v3 and v5) stays consistent.
+MACRO_FEATURES_TTC = ["macro_unemployment_ttc", "macro_fedfunds_ttc", "macro_unemployment_gap"]
+# Robust set for generalization: cyclical GAP + trailing year-over-year CHANGE (point-in-time
+# clean, more stationary than the level -> a better shot at out-of-time generalization than raw
+# macro, which Part C showed is a vintage proxy). Select with macro_set='robust'.
+MACRO_FEATURES_ROBUST = ["macro_unemployment_gap", "macro_unemployment_yoy",
+                         "macro_fedfunds_gap", "macro_fedfunds_yoy"]
+
 # --------------------------------------------------------------------------- #
 # Population (DATA_DICTIONARY §1, §11.5, §11.6)                                 #
 # --------------------------------------------------------------------------- #
@@ -511,8 +529,8 @@ def assign_macro_features(df: pd.DataFrame) -> pd.DataFrame:
         return out
     macro = pd.read_csv(MACRO_CSV, dtype={"ym": str}).set_index("ym")
     ym = pd.to_datetime(out["LoanOriginationDate"], errors="coerce").dt.to_period("M").astype(str)
-    for c in MACRO_FEATURES:
-        out[c] = ym.map(macro[c]) if c in macro.columns else np.nan
+    for c in macro.columns:        # join ALL macro columns (raw + smoothed + ttc + gap)
+        out[c] = ym.map(macro[c])
     return out
 
 
@@ -526,9 +544,12 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     macro_cols = []
     if MACRO_CSV.exists():           # only join when the macro data has been fetched
         df = assign_macro_features(df)
-        macro_cols = MACRO_FEATURES
+        macro_cols = list(dict.fromkeys(
+            MACRO_FEATURES + MACRO_FEATURES_TTC + MACRO_FEATURES_ROBUST))  # raw + TTC + robust
+    # LoanOriginationDate is retained (non-feature) so an out-of-time split can key on vintage.
     keep = list(dict.fromkeys(
-        MODEL_FEATURES + ENGINEERED_FEATURES + macro_cols + LABEL_SUPPORT + BENCHMARK_COLS))
+        MODEL_FEATURES + ENGINEERED_FEATURES + macro_cols
+        + ["LoanOriginationDate"] + LABEL_SUPPORT + BENCHMARK_COLS))
     keep = [c for c in keep if c in df.columns]
     out = df[keep].copy()
     out[PD_TARGET] = build_pd_target(df).to_numpy()

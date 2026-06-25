@@ -107,12 +107,14 @@ def _flaml_search(build_estimator, search_space, seed_config, int_keys, X, y, sp
 
 
 def _train_one(build_estimator, search_space, seed_config, int_keys, *,
-               include_engineered, include_cluster, scale_numeric, budget, include_macro=False):
+               include_engineered, include_cluster, scale_numeric, budget,
+               include_macro=False, split_mode="random", macro_set=None):
     """Tune + refit + isotonic-calibrate on one feature-set. Returns everything needed to
-    score or save. Shared by run_finetune (saves a model) and evaluate_featureset (matrix)."""
-    train, test = D.load_frame("train"), D.load_frame("test")
-    Xtr, ytr = D.pd_Xy(train, include_engineered, include_cluster, include_macro)
-    Xte, yte = D.pd_Xy(test, include_engineered, include_cluster, include_macro)
+    score or save. split_mode/macro_set drive Part C (random vs OOT, raw vs TTC macro)."""
+    if macro_set is None and include_macro:
+        macro_set = "raw"   # backward compat: include_macro=True -> raw point-in-time set
+    Xtr, ytr, Xte, yte = D.pd_split(split_mode, include_engineered=include_engineered,
+                                    include_cluster=include_cluster, macro_set=macro_set)
     spw = float((ytr == 0).sum() / max((ytr == 1).sum(), 1))
 
     best, cv_auc = _flaml_search(build_estimator, search_space, seed_config, int_keys,
