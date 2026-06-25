@@ -155,8 +155,25 @@ streamlit run app/app.py
   fields → fill 0 + `is_repeat_borrower` (informative nulls, never median).
 - **Fine-tuned PD.** LightGBM, FLAML-tuned and isotonic-calibrated, chosen after a
   like-for-like comparison with XGBoost and Random Forest (all on the same split/features).
-  It ties the AutoML baseline within statistical noise; shipped for its single-model
+  Shipped on the base + engineered + RiskCluster + TTC-macro feature set (see the macro bullet
+  below). It ties the AutoML baseline within statistical noise; shipped for its single-model
   transparency and fast SHAP. EAD/LGD stay on the AutoML baseline under both toggle states.
+- **Macro overlay (TTC-anchored).** Unemployment + fed funds at origination are added as a
+  *through-the-cycle*–anchored feature (smoothed and shrunk toward a long-run mean), not the
+  raw point-in-time level. We tested this hard: raw macro lifts AUC ~+0.015 on a random split
+  but that lift is **partly a vintage proxy** — out-of-time it shrinks (XGBoost) and even turns
+  *negative* for the logistic model. TTC anchoring generalizes best out-of-time (LightGBM
+  ~+0.025) and rescues the logistic model from overfitting. Macro shifts the **PD level** with
+  the economy (it's a cycle calibration for EL/reserves/pricing), not the applicant ranking.
+  Full plain-language write-up + the random-vs-out-of-time results table:
+  [docs/macro-decision.md](docs/macro-decision.md).
+- **Recommended next overlay — regional (state) unemployment.** The national macro only varies
+  by date, so on a random split it partly acts as a vintage proxy. The borrower's *own state's*
+  unemployment at origination is **cross-sectional** (it differs between borrowers on the same
+  day), so it's far less of a vintage artifact and has a real shot at helping out-of-time. The
+  pipeline is **already built and TTC-smoothed per state** (`data/build_state_features.py`,
+  `features.assign_state_features`, `macro_set='ttc_geo'`); it just needs the 51 BLS/FRED state
+  series pulled (a free FRED API key) to activate. Slated for a future version.
 - **Explainability & fair lending.** SHAP gives per-borrower attributions for the fine-tuned
   PD model, surfaced in the app's "Why?" panel. `BorrowerState`/`Occupation` can proxy
   protected class — handled with care and documented in the model card.
