@@ -1,20 +1,23 @@
-"""Run the 4-model x 4-feature-set PD matrix.
+"""Crash-resilient runner for the cumulative v1->v4 feature-set matrix.
 
-Models : XGBoost, LightGBM, Random Forest, ElasticNet Logistic Regression.
-Versions (what each adds on top of the base features):
-  v1_base       : base features only (no cluster, no engineering)
-  v2_cluster    : base + RiskCluster
-  v3_engineered : base + engineered features
-  v4_all        : base + RiskCluster + engineered features
+run_version.py runs all four models in ONE process, so a native crash (OpenMP/MKL conflict —
+seen on the logistic and lightgbm cells) takes down the whole version with no traceback. This
+runner isolates every (version, model) cell in its own subprocess with capped math-library
+threads, appends to version_matrix.csv incrementally, and is resumable (skips cells already in
+the CSV). Then it regenerates the chart.
 
-AutoML is NOT re-run here — it stays the existing FE-free baseline (pd_baseline_automl.csv),
-shown as the reference line in results_visual.py. Writes model-results/version_matrix.csv.
+AutoML is NOT re-run — it stays the FE-free baseline (pd_baseline_automl.csv), shown as the
+reference line in results_visual.py.
 
-Budget per cell via FLAML_TIME_BUDGET (default 120s). 16 cells.
-  FLAML_TIME_BUDGET=120 python modeling/run_matrix.py
+  python modeling/run_matrix.py                 # run all missing cells, then plot
+  FLAML_TIME_BUDGET=180 python modeling/run_matrix.py
+  python modeling/run_matrix.py --cell v3_engineered logistic 180   # worker (internal)
 """
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,55 +28,92 @@ sys.path.insert(0, str(REPO_ROOT / "modeling"))
 sys.path.insert(0, str(REPO_ROOT / "modeling" / "probability-of-default"))
 sys.path.insert(0, str(REPO_ROOT / "data"))
 
-from common.finetune import evaluate_featureset, RESULTS_DIR  # noqa: E402
-import finetune_xgboost as xgb   # noqa: E402
-import finetune_lightgbm as lgbm  # noqa: E402
-import finetune_rf as rf          # noqa: E402
-import finetune_logistic as logit  # noqa: E402
+RESULTS_DIR = REPO_ROOT / "modeling" / "model-results"
+OUT = RESULTS_DIR / "version_matrix.csv"
 
-# (name, build, search_space, seed, int_keys, scale_numeric)
-MODELS = [
-    ("xgboost", xgb.build, xgb.SEARCH_SPACE, xgb.SEED, xgb.INT_KEYS, False),
-    ("lightgbm", lgbm.build, lgbm.SEARCH_SPACE, lgbm.SEED, lgbm.INT_KEYS, False),
-    ("rf", rf.build, rf.SEARCH_SPACE, rf.SEED, rf.INT_KEYS, False),
-    ("logistic", logit.build, logit.SEARCH_SPACE, logit.SEED, logit.INT_KEYS, True),
-]
-# (version, include_engineered, include_cluster, include_macro)
-VERSIONS = [
-    ("v1_base", False, False, False),
-    ("v2_cluster", False, True, False),
-    ("v3_engineered", True, False, False),
-    ("v4_all", True, True, False),
-    ("v5_macro", True, True, True),   # v4 + point-in-time macro overlay
-]
+# Cumulative (nested) feature-set versions -> (include_engineered, include_cluster, macro_set).
+VERSIONS = {
+    "v1_base": (False, False, None),
+    "v2_cluster": (False, True, None),
+    "v3_engineered": (True, True, None),
+    "v4_macro": (True, True, "ttc"),     # national TTC macro (state overlay = future version)
+}
+MODELS = ["xgboost", "lightgbm", "rf", "logistic"]
+
+
+def _model(name):
+    import finetune_xgboost as xgb
+    import finetune_lightgbm as lgbm
+    import finetune_rf as rf
+    import finetune_logistic as logit
+    m = {"xgboost": (xgb, False), "lightgbm": (lgbm, False),
+         "rf": (rf, False), "logistic": (logit, True)}
+    mod, scale = m[name]
+    return mod.build, mod.SEARCH_SPACE, mod.SEED, mod.INT_KEYS, scale
+
+
+def run_cell(version: str, model: str, budget: int) -> dict:
+    from common.finetune import _train_one
+    from common import metrics as M
+    eng, clu, macro = VERSIONS[version]
+    build, space, seed, int_keys, scale = _model(model)
+    r = _train_one(build, space, seed, int_keys, include_engineered=eng, include_cluster=clu,
+                   macro_set=macro, scale_numeric=scale, budget=budget)
+    mc = M.pd_metrics(r["yte"], r["cal_prob"])
+    return {"version": version, "model": model, "cv_auc": round(r["cv_auc"], 4),
+            "test_auc_cal": round(mc["AUC"], 4), "gini": round(mc["Gini"], 4),
+            "ks": round(mc["KS"], 4), "brier": round(mc["Brier"], 4),
+            "n_features": len(r["feature_cols"])}
+
+
+def _done() -> set:
+    if not OUT.exists():
+        return set()
+    df = pd.read_csv(OUT)
+    return set(zip(df["version"], df["model"]))
+
+
+def _append(row: dict) -> None:
+    df = (pd.concat([pd.read_csv(OUT), pd.DataFrame([row])], ignore_index=True)
+          if OUT.exists() else pd.DataFrame([row]))
+    df = df.drop_duplicates(["version", "model"], keep="last")
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUT, index=False)
 
 
 def main() -> None:
-    rows = []
-    for vname, eng, clu, mac in VERSIONS:
-        for mname, build, space, seed, int_keys, scale in MODELS:
-            print(f"\n##### {vname}  x  {mname} #####", flush=True)
-            try:
-                res = evaluate_featureset(mname, build, space, seed, int_keys,
-                                          include_engineered=eng, include_cluster=clu,
-                                          include_macro=mac, scale_numeric=scale)
-            except Exception as exc:  # keep the matrix going if one cell errors
-                print(f"  FAILED: {exc}")
-                res = {"model": mname, "cv_auc": float("nan"), "test_auc_cal": float("nan")}
-            res["version"] = vname
-            rows.append(res)
-            print(f"  -> cv_auc={res.get('cv_auc')}  test_auc_cal={res.get('test_auc_cal')}", flush=True)
+    budget = int(os.environ.get("FLAML_TIME_BUDGET", "180"))
+    # Cap every math-library thread pool + tolerate duplicate OpenMP runtimes (the crash cause).
+    env = dict(os.environ, OMP_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2", MKL_NUM_THREADS="2",
+               KMP_DUPLICATE_LIB_OK="TRUE")
+    done = _done()
+    todo = [(v, m) for v in VERSIONS for m in MODELS if (v, m) not in done]
+    print(f"{len(done)} cells already done; running {len(todo)} (budget={budget}s each)")
+    for version, model in todo:
+        tag = f"{version} x {model}"
+        print(f"\n##### {tag} #####", flush=True)
+        cmd = [sys.executable, __file__, "--cell", version, model, str(budget)]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=budget * 6, env=env)
+            row = None
+            for line in p.stdout.splitlines():
+                if line.startswith("RESULT "):
+                    row = json.loads(line[len("RESULT "):])
+            if row is None:
+                print(f"  FAILED (exit {p.returncode}): " + " | ".join(p.stderr.splitlines()[-3:]))
+                continue
+            _append(row)
+            print(f"  -> {tag}: test_auc_cal={row['test_auc_cal']}  cv_auc={row['cv_auc']}", flush=True)
+        except subprocess.TimeoutExpired:
+            print(f"  TIMEOUT {tag}")
 
-    df = pd.DataFrame(rows)
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / "version_matrix.csv"
-    df.to_csv(out, index=False)
-    print("\n================ MATRIX COMPLETE ================")
-    pivot = df.pivot(index="model", columns="version", values="test_auc_cal")
-    pivot = pivot.reindex(columns=[v[0] for v in VERSIONS])
-    print(pivot.to_string())
-    print(f"\nsaved {out}")
+    print("\nregenerating chart ...", flush=True)
+    subprocess.run([sys.executable, str(REPO_ROOT / "modeling" / "results_visual.py")], env=env)
+    print("DONE")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) >= 4 and sys.argv[1] == "--cell":
+        print(f"RESULT {json.dumps(run_cell(sys.argv[2], sys.argv[3], int(sys.argv[4])))}")
+    else:
+        main()
