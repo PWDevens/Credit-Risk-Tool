@@ -5,7 +5,9 @@ turns it into **pricing and provisioning decisions**, built on the
 [Prosper Loan dataset](https://www.kaggle.com/) (~113k loans, 81 columns).
 
 ## Demo
-<video controls src="demo.mp4" title="Title"></video>
+![Top of Demo](docs/Demo1.png)
+![Middle of Demo](docs/Demo2.png)
+![Bottom of Demo](docs/Demo3.png)
 
 ## The financial modeling
 
